@@ -20,7 +20,7 @@ const xmlParser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "",
   parseTagValue: false,
-  processEntities: false,
+  processEntities: true,
 });
 function xml(value: any): Row | undefined {
   if (typeof value !== "string" || value.length > 2097152 || /<!DOCTYPE|<!ENTITY/i.test(value))
@@ -154,8 +154,9 @@ export class Storage {
       if (!group.name)
         group.name =
           group.members
-            ?.filter((member) => member.id !== this.account())
-            .map((member) => member.name)
+            ?.slice()
+            .sort((a, b) => Number(a.id === this.account()) - Number(b.id === this.account()))
+            .map((member) => member.native?.nick_name || member.name)
             .filter(Boolean)
             .slice(0, 3)
             .join(", ") || "Group chat";
@@ -241,15 +242,46 @@ export class Storage {
       },
     };
     if (["text", "system"].includes(m.kind) && readable) m.text = content;
+    if (
+      m.kind === "text" &&
+      m.chat_type === "group" &&
+      sender &&
+      m.text?.startsWith(sender + ":\n")
+    )
+      m.text = m.text.slice(sender.length + 2);
     const root = readable ? xml(content) : undefined;
     const app = root?.msg?.appmsg || root?.appmsg;
     if (type === 49 && app) {
       if (String(app.type) === "6") m.kind = "file";
       if (String(app.type) === "8") m.kind = "sticker";
+      if (String(app.type) === "62" && app.patinfo) {
+        m.kind = "system";
+        m.text = String(app.title || "Tickle");
+      }
       if (String(app.type) === "57") {
         m.kind = "text";
         m.text = app.title || "";
         if (app.refermsg?.svrid) m.reply_to = String(app.refermsg.svrid);
+        if (app.refermsg)
+          m.quote = {
+            sender_id: String(app.refermsg.fromusr || ""),
+            sender_name: String(app.refermsg.displayname || ""),
+            text: String(app.refermsg.content || ""),
+            type: Number(app.refermsg.type) || 0,
+          };
+      }
+      if (String(app.type) === "5" && typeof app.url === "string") {
+        try {
+          const url = new URL(app.url);
+          if (["https:", "http:"].includes(url.protocol) && !url.username && !url.password) {
+            m.kind = "link";
+            m.link = {
+              url: url.href,
+              title: String(app.title || url.hostname),
+              description: String(app.des || ""),
+            };
+          }
+        } catch {}
       }
     }
     const location = root?.msg?.location || root?.location;

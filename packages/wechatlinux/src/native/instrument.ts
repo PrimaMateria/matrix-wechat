@@ -635,6 +635,20 @@ function outboundCall(payload, queued = false) {
 }
 
 rpc.exports = {
+  sendreply(chat, xml) {
+    if (
+      typeof chat !== "string" ||
+      !chat ||
+      typeof xml !== "string" ||
+      xml.length > 262144 ||
+      !xml.includes("<type>57</type>")
+    )
+      throw Error("Invalid quoted reply");
+    return outboundCall(
+      JSON.stringify({ chat_id: chat, message_type: 49, content_xml: xml }),
+      true,
+    );
+  },
   sendfile(chat, path, name) {
     if (
       typeof chat !== "string" ||
@@ -665,9 +679,7 @@ rpc.exports = {
       typeof chat !== "string" ||
       !chat ||
       typeof path !== "string" ||
-      !/^\/home\/wechat\/\.cache\/wechatlinux\/uploads\/[a-f0-9-]{36}\.(png|jpg|gif|webp)$/.test(
-        path,
-      )
+      !/^\/home\/wechat\/\.cache\/wechatlinux\/uploads\/[a-f0-9-]{36}\.(png|jpg|gif)$/.test(path)
     )
       throw Error("Invalid image upload");
     const marker = "http://127.0.0.1:18742/native-upload/" + path.split("/").pop();

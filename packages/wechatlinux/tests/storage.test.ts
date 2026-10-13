@@ -67,6 +67,19 @@ test("native IDs remain exact and history identifies own messages", async () => 
   expect(page.messages[0].own).toBe(true);
   expect(page.messages[0].text).toBe("hello");
 });
+test("native app subtype 62 tickles render the client title as a read-only system message", async () => {
+  const { store, chat, insert } = setup();
+  insert(
+    1,
+    9007199254740999n,
+    "<msg><appmsg><type>62</type><title>I tickled Friend &amp; Co</title><patinfo><fromusername>test_self</fromusername><pattedusername>test_friend</pattedusername></patinfo></appmsg></msg>",
+    49,
+  );
+  const message = (await store.history({ chat_id: chat })).messages[0];
+  expect(message.kind).toBe("system");
+  expect(message.text).toBe("I tickled Friend & Co");
+  expect(message.own).toBe(true);
+});
 test("initial history is not replayed as live events; inserts and ID changes are emitted once", async () => {
   const { store, db, table, insert } = setup();
   expect(await store.changes()).toEqual([]);

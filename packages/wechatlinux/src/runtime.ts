@@ -26,6 +26,7 @@ import { voiceAudioProcess } from "./audio";
 import { imageType, stickerImage } from "./media";
 import outbound from "./native/outbound_profile.json";
 import profile from "./native/storage_profile.json";
+import { replyXML } from "./reply";
 import { Storage } from "./storage";
 import { APIError, type Database, type Event, type Row, type Status } from "./types";
 
@@ -172,9 +173,12 @@ export class Runtime {
       chat.length > 256 ||
       !bytes.length ||
       bytes.length > 20 * 1024 * 1024 ||
-      !["image/png", "image/jpeg", "image/gif", "image/webp"].includes(type || "")
+      !["image/png", "image/jpeg", "image/gif"].includes(type || "")
     )
-      throw new APIError("invalid_params", "Choose a PNG, JPEG, GIF or WebP image up to 20 MiB");
+      throw new APIError(
+        "invalid_params",
+        "Choose a PNG, JPEG or GIF image up to 20 MiB; use File for other formats",
+      );
     return this.operation(async () => {
       if (this.status.state !== "logged_in" || !this.sendReady)
         throw new APIError("not_ready", "WeChat is still initializing");
@@ -347,13 +351,17 @@ export class Runtime {
           this.qrAt = 0;
           this.updateStatus({
             state:
-              !p.state.active || (p.state.phase === 4 && [3, 4].includes(p.state.request))
+              !p.state.active || (p.state.phase === 4 && [3, 6].includes(p.state.request))
                 ? "signing_in"
                 : [3, 4].includes(p.state.phase)
                   ? "awaiting_confirmation"
                   : "awaiting_scan",
           });
         } else if (p.type === "change_hint") {
+          if (p.kind === "login_view_open") {
+            this.loginRequested = false;
+            this.sendReady = false;
+          }
           this.dirty = true;
           this.store.invalidate();
         }
@@ -460,14 +468,18 @@ export class Runtime {
                 this.sendReady = false;
               }
               this.baseline = false;
-              if (!this.loginRequested && state.login?.phase === 5 && state.login?.can_resume) {
+              if (
+                !this.loginRequested &&
+                state.login?.can_resume &&
+                (state.login.phase === 5 || (state.login.phase === 4 && state.login.request === 2))
+              ) {
                 const result = await this.native("login", "saved");
                 this.loginRequested = result.queued === true;
               }
               this.updateStatus({
                 state:
                   !state.login?.active ||
-                  (state.login?.phase === 4 && [3, 4].includes(state.login?.request))
+                  (state.login?.phase === 4 && [3, 6].includes(state.login?.request))
                     ? "signing_in"
                     : [3, 4].includes(state.login?.phase)
                       ? "awaiting_confirmation"
@@ -544,7 +556,20 @@ export class Runtime {
             "invalid_params",
             "A conversation and nonempty text up to 64 KiB are required",
           );
-        const response = await this.native("sendtext", params.chat_id, params.text);
+        let response;
+        if (params.reply_to !== undefined) {
+          if (typeof params.reply_to !== "string" || !/^\d{1,20}$/.test(params.reply_to))
+            throw new APIError("invalid_params", "A source message ID is required");
+          const quoted = await this.store.message(params.chat_id, params.reply_to);
+          const contacts = await this.store.contacts();
+          const displayName =
+            contacts.contacts.find((c) => c.id === quoted.sender_id)?.name || quoted.sender_id;
+          response = await this.native(
+            "sendreply",
+            params.chat_id,
+            replyXML(params.text, quoted, displayName),
+          );
+        } else response = await this.native("sendtext", params.chat_id, params.text);
         if (response.success !== true)
           throw new APIError(
             "send_failed",

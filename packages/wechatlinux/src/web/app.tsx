@@ -41,6 +41,7 @@ function App() {
     [messages, setMessages] = useState<Message[]>([]),
     [cursor, setCursor] = useState<string>(),
     [draft, setDraft] = useState(""),
+    [reply, setReply] = useState<Message>(),
     [error, setError] = useState(""),
     [filter, setFilter] = useState(""),
     [sending, setSending] = useState(false),
@@ -57,6 +58,7 @@ function App() {
     mounted = useRef(true),
     messageBox = useRef<HTMLDivElement>(null),
     historyBusy = useRef(false);
+  const draftInput = useRef<HTMLTextAreaElement>(null);
   chat.current = selected;
   const name = (id: string) =>
     contacts.get(id)?.name ||
@@ -218,6 +220,7 @@ function App() {
     setMessages([]);
     setCursor(undefined);
     setShowMembers(false);
+    setReply(undefined);
     void history();
   }, [selected]);
   async function retryLogin(mode: "saved" | "qr") {
@@ -240,8 +243,11 @@ function App() {
     setSending(true);
     setError("");
     try {
-      await api("send", { chat_id: id, kind: "text", text }, true);
-      if (chat.current === id) setDraft("");
+      await api("send", { chat_id: id, kind: "text", text, reply_to: reply?.id }, true);
+      if (chat.current === id) {
+        setDraft("");
+        setReply(undefined);
+      }
       await history();
       await conversations();
     } catch (e) {
@@ -287,7 +293,11 @@ function App() {
               ? "Confirm on phone"
               : status.state === "disconnected"
                 ? "Disconnected"
-                : "Signing in"}
+                : status.state === "signing_in"
+                  ? "Signing in…"
+                  : status.state === "starting"
+                    ? "Connecting…"
+                    : "Sign in"}
         </span>
         {status.state === "logged_in" && <button onClick={() => void refresh()}>Refresh</button>}
       </header>
@@ -397,7 +407,23 @@ function App() {
                       ).toLocaleString()}
                     </div>
                   )}
-                  {m.reply_to && <blockquote>Reply to {m.reply_to}</blockquote>}
+                  {m.reply_to && (
+                    <blockquote>
+                      <strong>
+                        {m.quote?.sender_name ||
+                          name(
+                            m.quote?.sender_id ||
+                              ordered.find((other) => other.id === m.reply_to)?.sender_id ||
+                              "",
+                          )}
+                      </strong>
+                      <div>
+                        {m.quote?.text ||
+                          ordered.find((other) => other.id === m.reply_to)?.text ||
+                          "Quoted message"}
+                      </div>
+                    </blockquote>
+                  )}
                   <div>
                     {m.kind === "sticker" || m.kind === "image" ? (
                       <img
@@ -434,6 +460,12 @@ function App() {
                       >
                         {m.media?.name || "Download file"}
                       </a>
+                    ) : m.link ? (
+                      <a className="linkCard" href={m.link.url} target="_blank" rel="noreferrer">
+                        <strong>{m.link.title}</strong>
+                        <span>{m.link.description}</span>
+                        <small>{new URL(m.link.url).hostname}</small>
+                      </a>
                     ) : (
                       (m.text ??
                       (m.kind === "location"
@@ -442,6 +474,19 @@ function App() {
                     )}
                   </div>
                   {m.mentions?.length && <small>{m.mentions.map(name).join(", ")}</small>}
+                  {m.kind !== "system" && /^\d+$/.test(m.id) && (
+                    <button
+                      className="replyButton"
+                      type="button"
+                      disabled={sending}
+                      onClick={() => {
+                        setReply(m);
+                        draftInput.current?.focus();
+                      }}
+                    >
+                      Reply
+                    </button>
+                  )}
                 </article>
               ))}
               {!ordered.length && (
@@ -451,59 +496,81 @@ function App() {
               )}
             </div>
             {selected && (
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  void send();
-                }}
-              >
-                <input
-                  className="hidden"
-                  ref={imageInput}
-                  type="file"
-                  accept="image/png,image/jpeg,image/gif,image/webp"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    event.target.value = "";
-                    if (file) void sendAttachment(file, "image");
+              <>
+                {reply && (
+                  <div className="replyDraft">
+                    <span>
+                      Replying to {reply.own ? "You" : name(reply.sender_id)}:{" "}
+                      {reply.text || `[${reply.kind}]`}
+                    </span>
+                    <button
+                      type="button"
+                      aria-label="Cancel reply"
+                      onClick={() => setReply(undefined)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                )}
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void send();
                   }}
-                />
-                <button
-                  type="button"
-                  disabled={sending}
-                  onClick={() => imageInput.current?.click()}
                 >
-                  Image
-                </button>
-                <input
-                  className="hidden"
-                  ref={fileInput}
-                  type="file"
-                  onChange={(event) => {
-                    const file = event.target.files?.[0];
-                    event.target.value = "";
-                    if (file) void sendAttachment(file, "file");
-                  }}
-                />
-                <button type="button" disabled={sending} onClick={() => fileInput.current?.click()}>
-                  File
-                </button>
-                <textarea
-                  aria-label="Message"
-                  placeholder="Message"
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-                      e.preventDefault();
-                      void send();
-                    }
-                  }}
-                />
-                <button className="send" disabled={sending || !draft.trim()}>
-                  {sending ? "Sending…" : "Send"}
-                </button>
-              </form>
+                  <input
+                    className="hidden"
+                    ref={imageInput}
+                    type="file"
+                    accept="image/png,image/jpeg,image/gif"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      event.target.value = "";
+                      if (file) void sendAttachment(file, "image");
+                    }}
+                  />
+                  <button
+                    type="button"
+                    disabled={sending}
+                    onClick={() => imageInput.current?.click()}
+                  >
+                    Image
+                  </button>
+                  <input
+                    className="hidden"
+                    ref={fileInput}
+                    type="file"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      event.target.value = "";
+                      if (file) void sendAttachment(file, "file");
+                    }}
+                  />
+                  <button
+                    type="button"
+                    disabled={sending}
+                    onClick={() => fileInput.current?.click()}
+                  >
+                    File
+                  </button>
+                  <textarea
+                    ref={draftInput}
+                    aria-label="Message"
+                    placeholder="Message"
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                        e.preventDefault();
+                        void send();
+                      }
+                    }}
+                  />
+                  <button className="send" disabled={sending || !draft.trim()}>
+                    {sending ? "Sending…" : "Send"}
+                  </button>
+                </form>
+              </>
             )}
           </section>
         </main>

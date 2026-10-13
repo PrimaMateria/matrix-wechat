@@ -44,6 +44,8 @@ export interface Message {
   text?: string;
   mentions?: string[];
   reply_to?: string;
+  quote?: { sender_id: string; sender_name: string; text: string; type: number };
+  link?: { url: string; title: string; description: string };
   location?: { latitude: number; longitude: number; label: string };
   media?: { id: string; kind: string; state: string; name?: string; size?: number };
   native?: Row;
