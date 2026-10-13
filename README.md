@@ -33,7 +33,7 @@ The bridge invites the configured owner to a management room. Native saved-accou
 bun packages/wechatlinux/scripts/adb-login.ts --watch
 ```
 
-The pinned AppImage and executable hashes are checked during build and startup. The client installation is read-only; persistent account data is writable. The client is Linux amd64. Matrix rooms are unencrypted; enabling encryption stops bridging for that room and produces an explicit notice.
+Both Dockerfiles download the original validated AppImage from the [pinned client release](https://github.com/yamada-sexta/matrix-wechat/releases/tag/wechat-client-4.1.13-4526180b), with three bounded attempts. The AppImage hash comes from the native ABI profile; its hash and the extracted executable hash are checked during build and startup. To use another mirror of the same artifact, set the `WECHAT_APPIMAGE_URL` build argument; the hash pin still applies. The client installation is read-only; persistent account data is writable. The client is Linux amd64. Matrix rooms are unencrypted; enabling encryption stops bridging for that room and produces an explicit notice.
 
 ## Bridged behavior
 

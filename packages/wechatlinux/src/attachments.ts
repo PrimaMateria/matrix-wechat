@@ -1,27 +1,11 @@
 import { createDecipheriv, createHash } from "node:crypto";
 import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { XMLParser } from "fast-xml-parser";
-import { imageType } from "./media";
+import { imageType, messageMetadata as metadata } from "./media";
 import { protobufPath } from "./protobuf";
 import { APIError, type Message } from "./types";
 
 const md5 = (input: string | Buffer) => createHash("md5").update(input).digest("hex");
-const xml = new XMLParser({
-  ignoreAttributes: false,
-  attributeNamePrefix: "",
-  parseTagValue: false,
-});
-function metadata(message: Message) {
-  const content = message.native?.decoded_content;
-  if (
-    typeof content !== "string" ||
-    content.length > 2097152 ||
-    /<!DOCTYPE|<!ENTITY/i.test(content)
-  )
-    throw new APIError("media_unavailable", "Attachment metadata is unavailable");
-  return xml.parse(content).msg;
-}
 export function attachmentChecksum(message: Message): string {
   const root = metadata(message);
   return String(root?.videomsg?.md5 || root?.appmsg?.md5 || root?.img?.md5 || "").toLowerCase();
@@ -56,6 +40,28 @@ function months(message: Message) {
       .toISOString()
       .slice(0, 7),
   );
+}
+export async function receivedThumbnail(message: Message, home = "/home/wechat") {
+  const checksum = String(metadata(message).appmsg?.appattach?.cdnthumbmd5 || "").toLowerCase();
+  if (!/^[a-f0-9]{32}$/.test(checksum))
+    throw new APIError("media_unavailable", "Cached thumbnail metadata is unavailable");
+  const account = accountDirectory(message, home);
+  for (const month of months(message)) {
+    const directory = join(account, "cache", month, "Message", md5(message.chat_id), "Thumb");
+    let files: string[];
+    try {
+      files = await readdir(directory);
+    } catch (error: any) {
+      if (error.code === "ENOENT") continue;
+      throw error;
+    }
+    for (const name of files) {
+      const bytes = await cachedBytes(join(directory, name), account),
+        type = imageType(bytes);
+      if (type && md5(bytes) === checksum) return { bytes, type };
+    }
+  }
+  throw new APIError("media_unavailable", "Link thumbnail is not cached yet");
 }
 
 export function decodeImageV2(bytes: Buffer, key: Buffer, xor: number) {

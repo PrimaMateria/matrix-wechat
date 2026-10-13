@@ -13,6 +13,97 @@ export function imageType(bytes: Uint8Array) {
   if (b[0] === 255 && b[1] === 216 && b[2] === 255) return "image/jpeg";
   return undefined;
 }
+const xml = new XMLParser({
+  ignoreAttributes: false,
+  attributeNamePrefix: "",
+  parseTagValue: false,
+});
+export function messageMetadata(message: Message) {
+  const content = message.native?.decoded_content;
+  if (
+    typeof content !== "string" ||
+    content.length > 2097152 ||
+    /<!DOCTYPE|<!ENTITY/i.test(content)
+  )
+    throw new APIError("media_unavailable", "Message metadata is unavailable");
+  const root = xml.parse(content);
+  return root.msg || root;
+}
+export function channelMedia(app: any) {
+  const media = app?.finderFeed?.mediaList?.media;
+  return Array.isArray(media) ? media[0] : media;
+}
+// Fetch only media explicitly supplied by a shared card. Native CDN tokens and
+// signed URLs stay inside the runtime rather than being exposed to the browser.
+export async function sharedCardAsset(message: Message, directory: string, thumbnail = false) {
+  const app = messageMetadata(message).appmsg,
+    media = channelMedia(app);
+  const urls = thumbnail ? [media?.coverUrl, media?.thumbUrl, app?.thumburl] : [media?.url];
+  const source = urls
+    .flat()
+    .find((value) => typeof value === "string" && /^https?:\/\//.test(value));
+  if (!source) throw new APIError("media_unavailable", "Shared card media is unavailable");
+  const url = new URL(source);
+  if (
+    url.username ||
+    url.password ||
+    url.port ||
+    !(url.hostname === "wxapp.tc.qq.com" || url.hostname.endsWith(".qpic.cn"))
+  )
+    throw new APIError("media_unavailable", "Unsupported shared card media source");
+  url.protocol = "https:";
+  const file = join(
+    directory,
+    createHash("sha256")
+      .update(`${message.account_id}:${message.chat_id}:${message.id}:${thumbnail}:${source}`)
+      .digest("hex"),
+  );
+  try {
+    const bytes = await readFile(file),
+      type = thumbnail
+        ? imageType(bytes)
+        : bytes.subarray(4, 8).toString() === "ftyp"
+          ? "video/mp4"
+          : undefined;
+    if (type) return { bytes, type };
+  } catch {}
+  const response = await fetch(url, { redirect: "error" });
+  if (!response.ok || !response.body)
+    throw new APIError("media_unavailable", "Shared card media download failed");
+  const reader = response.body.getReader(),
+    chunks: Uint8Array[] = [];
+  let length = 0;
+  while (length < 12) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    length += value.length;
+  }
+  const head = Buffer.concat(chunks),
+    type = thumbnail
+      ? imageType(head)
+      : head.subarray(4, 8).toString() === "ftyp"
+        ? "video/mp4"
+        : undefined;
+  if (!type) {
+    await reader.cancel();
+    throw new APIError(
+      thumbnail ? "media_unavailable" : "unsupported",
+      thumbnail
+        ? "Shared card image is unavailable"
+        : "The Channels video is encrypted; the current package cannot decode it",
+    );
+  }
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+  }
+  const bytes = Buffer.concat(chunks);
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  await writeFile(file, bytes, { mode: 0o600 });
+  return { bytes, type };
+}
 export function stickerMetadata(message: Message) {
   const content = message.native?.decoded_content;
   if (
@@ -22,13 +113,9 @@ export function stickerMetadata(message: Message) {
     /<!DOCTYPE|<!ENTITY/i.test(content)
   )
     throw new APIError("media_unavailable", "Sticker data is unavailable");
-  const root = new XMLParser({
-      ignoreAttributes: false,
-      attributeNamePrefix: "",
-      parseTagValue: false,
-    }).parse(content),
-    emoji = root.msg?.emoji || root.msg?.emoticon;
-  const app = root.msg?.appmsg;
+  const root = messageMetadata(message),
+    emoji = root.emoji || root.emoticon;
+  const app = root.appmsg;
   if (!emoji && String(app?.type) === "8" && typeof app.appattach?.emojiinfo === "string") {
     const bytes = Buffer.from(app.appattach.emojiinfo, "base64");
     const md5 = protobufBytes(bytes, 1)?.toString(),

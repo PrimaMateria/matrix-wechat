@@ -45,9 +45,19 @@ export interface Message {
   mentions?: string[];
   reply_to?: string;
   quote?: { sender_id: string; sender_name: string; text: string; type: number };
-  link?: { url: string; title: string; description: string };
+  link?: { url: string; title: string; description: string; source?: string; thumbnail?: boolean };
+  read_only?: boolean;
   location?: { latitude: number; longitude: number; label: string };
-  media?: { id: string; kind: string; state: string; name?: string; size?: number };
+  media?: {
+    id: string;
+    kind: string;
+    state: string;
+    name?: string;
+    size?: number;
+    width?: number;
+    height?: number;
+    duration?: number;
+  };
   native?: Row;
 }
 export interface Event {

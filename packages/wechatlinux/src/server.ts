@@ -7,6 +7,7 @@ export interface Backend {
   sendFile?(chat: string, bytes: Buffer, name: string): Promise<unknown>;
   avatar?(id: string): Promise<{ bytes: Buffer; type: string }>;
   media?(chat: string, id: string): Promise<{ bytes: Buffer; type: string; name?: string }>;
+  thumbnail?(chat: string, id: string): Promise<{ bytes: Buffer; type: string }>;
   status: Status;
   qr?: Buffer;
   qrAt: number;
@@ -144,6 +145,17 @@ export function createHandler(backend: Backend, webRoot = join(import.meta.dir, 
       if (request.method === "GET" && url.pathname === "/api/avatar") {
         if (!backend.avatar) throw new APIError("not_found", "Avatar endpoint is unavailable");
         const asset = await backend.avatar(url.searchParams.get("id") || "");
+        return new Response(new Uint8Array(asset.bytes), {
+          headers: { ...headers, "Content-Type": asset.type },
+        });
+      }
+      if (request.method === "GET" && url.pathname === "/api/thumbnail") {
+        if (!backend.thumbnail)
+          throw new APIError("not_found", "Thumbnail endpoint is unavailable");
+        const asset = await backend.thumbnail(
+          url.searchParams.get("chat_id") || "",
+          url.searchParams.get("message_id") || "",
+        );
         return new Response(new Uint8Array(asset.bytes), {
           headers: { ...headers, "Content-Type": asset.type },
         });

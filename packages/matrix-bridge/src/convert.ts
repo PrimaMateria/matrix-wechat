@@ -47,6 +47,8 @@ export function incoming(
     ghost: (id: string) => string;
     owner: string;
     missingMedia?: boolean;
+    thumbnail?: Asset;
+    thumbnailMxc?: string;
   },
 ) {
   let type = "m.room.message";
@@ -54,21 +56,44 @@ export function incoming(
     msgtype: "m.text",
     body: message.text || `[${message.kind}]`,
   };
-  if (message.kind === "system" || message.kind === "unknown") content.msgtype = "m.notice";
-  if (message.kind === "link" && message.link) {
+  if (message.kind === "system" || message.kind === "unknown" || message.read_only)
+    content.msgtype = "m.notice";
+  if (message.link) {
     const { title, description, url } = message.link;
     let safe = false;
     try {
       const parsed = new URL(url);
       safe = ["http:", "https:"].includes(parsed.protocol) && !parsed.username && !parsed.password;
     } catch {}
-    if (safe)
+    if (safe || message.kind === "channels")
       content = {
         msgtype: "m.text",
         body: [title, description, url].filter(Boolean).join("\n"),
         format: "org.matrix.custom.html",
-        formatted_body: `<a href="${escapeHTML(url)}">${escapeHTML(title)}</a>${description ? `<br>${escapeHTML(description)}` : ""}`,
+        formatted_body: `${safe ? `<a href="${escapeHTML(url)}">${escapeHTML(title)}</a>` : escapeHTML(title)}${description ? `<br>${escapeHTML(description)}` : ""}${message.link.source ? `<br>${escapeHTML(message.link.source)}` : ""}`,
       };
+    if (options.thumbnail && options.thumbnailMxc) {
+      const imageInfo = {
+        mimetype: options.thumbnail.type,
+        size: options.thumbnail.bytes.length,
+        ...dimensions(options.thumbnail.bytes, options.thumbnail.type),
+      };
+      content["com.beeper.linkpreviews"] = [
+        {
+          matched_url: url,
+          "og:url": url,
+          "og:title": title,
+          "og:description": description,
+          "og:image": options.thumbnailMxc,
+          "og:image:type": imageInfo.mimetype,
+          "matrix:image:size": imageInfo.size,
+          "og:image:width": imageInfo.w,
+          "og:image:height": imageInfo.h,
+        },
+      ];
+      content.formatted_body = `<img src="${escapeHTML(options.thumbnailMxc)}" alt="${escapeHTML(title)}"><br>${content.formatted_body || escapeHTML(content.body)}`;
+      content.format = "org.matrix.custom.html";
+    }
   }
   if (message.kind === "location" && message.location) {
     const { latitude, longitude, label } = message.location;
@@ -91,6 +116,7 @@ export function incoming(
         image: "m.image",
         sticker: "m.image",
         video: "m.video",
+        channels: "m.video",
         audio: "m.audio",
         file: "m.file",
       } as Record<string, string>
@@ -106,17 +132,41 @@ export function incoming(
         mimetype: asset.type,
         size: asset.bytes.length,
         ...dimensions(asset.bytes, asset.type),
+        ...(message.media?.width ? { w: message.media.width } : {}),
+        ...(message.media?.height ? { h: message.media.height } : {}),
+        ...(message.media?.duration ? { duration: message.media.duration } : {}),
+        ...(options.thumbnailMxc && options.thumbnail
+          ? {
+              thumbnail_url: options.thumbnailMxc,
+              thumbnail_info: {
+                mimetype: options.thumbnail.type,
+                size: options.thumbnail.bytes.length,
+                ...dimensions(options.thumbnail.bytes, options.thumbnail.type),
+              },
+            }
+          : {}),
       },
     };
+    if (message.link) {
+      content.filename = content.body;
+      content.body = [message.link.title, message.link.description, message.link.source]
+        .filter(Boolean)
+        .join("\n");
+    }
     if (message.kind === "sticker") {
       type = "m.sticker";
       delete content.msgtype;
     }
-  } else if (options.missingMedia)
+  } else if (options.missingMedia && !message.link)
     content = {
       msgtype: "m.notice",
       body: `[${message.kind} unavailable in the local WeChat cache]${message.media?.name ? ` ${message.media.name}` : ""}`,
     };
+  if (message.kind === "channels" && !options.asset) {
+    content.body += "\n[Video playback unavailable in the current WeChat package]";
+    if (content.formatted_body)
+      content.formatted_body += "<br>Video playback unavailable in the current WeChat package";
+  }
   if (message.reply_to) {
     if (options.replyEvent)
       content["m.relates_to"] = { "m.in_reply_to": { event_id: options.replyEvent } };

@@ -17,7 +17,7 @@ import {
 } from "./messages";
 import { hash, type Inbox, type Mapping, type MatrixEvent, type Portal, Store } from "./store";
 
-const mediaKinds = new Set(["image", "sticker", "audio", "video", "file"]);
+const mediaKinds = new Set(["image", "sticker", "audio", "video", "file", "channels"]);
 const pendingTimeout = 120000;
 export class WeChatBridge {
   private busy = false;
@@ -293,10 +293,24 @@ export class WeChatBridge {
   }
   private async content(message: Message) {
     let asset: Asset | undefined, mxc;
+    let thumbnail: Asset | undefined, thumbnailMxc;
     let missingMedia = false;
     if (mediaKinds.has(message.kind)) {
       try {
         asset = await this.runtime.media(message.chat_id, message.id);
+      } catch (error) {
+        if (
+          !(error instanceof APIError) ||
+          !["not_found", "media_unavailable", "unsupported"].includes(error.code)
+        )
+          throw error;
+        missingMedia = error.code !== "unsupported";
+      }
+      if (asset) mxc = await this.assetUpload(asset.bytes, asset.type, asset.name);
+    }
+    if (message.link?.thumbnail) {
+      try {
+        thumbnail = await this.runtime.thumbnail(message.chat_id, message.id);
       } catch (error) {
         if (
           !(error instanceof APIError) ||
@@ -305,13 +319,15 @@ export class WeChatBridge {
           throw error;
         missingMedia = true;
       }
-      if (asset) mxc = await this.assetUpload(asset.bytes, asset.type, asset.name);
+      if (thumbnail) thumbnailMxc = await this.assetUpload(thumbnail.bytes, thumbnail.type);
     }
     return {
       ...incoming(message, {
         asset,
         mxc,
         missingMedia,
+        thumbnail,
+        thumbnailMxc,
         replyEvent: message.reply_to
           ? this.store.mapping(this.account, message.chat_id, message.reply_to)?.event
           : undefined,

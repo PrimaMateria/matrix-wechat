@@ -544,18 +544,19 @@ try {
   );
   assert(guestSend.ok, "second Matrix user sends a real event");
   const guestEvent = (await guestSend.json()) as any;
+  // Synapse reserves this event type for the room's elevated users, even without state_key.
   const falseEncryption = await fetch(
     `http://127.0.0.1:18008/_matrix/client/v3/rooms/${encodeURIComponent(room)}/send/m.room.encryption/${crypto.randomUUID()}`,
     {
       method: "PUT",
       headers: {
-        Authorization: `Bearer ${guest.access_token}`,
+        Authorization: `Bearer ${registration.getAppServiceToken()}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({ algorithm: "m.megolm.v1.aes-sha2" }),
     },
   );
-  assert(falseEncryption.ok, "second Matrix user sends a non-state encryption event");
+  assert(falseEncryption.ok, "bot sends a real non-state encryption event");
   const marker = await matrix(
     `/_matrix/client/v3/rooms/${encodeURIComponent(room)}/send/m.room.message/${crypto.randomUUID()}`,
     "PUT",

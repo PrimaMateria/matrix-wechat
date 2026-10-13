@@ -243,6 +243,16 @@ blockquote {
 .linkCard small {
   color: #647467;
 }
+.linkCard a {
+  color: inherit;
+  text-decoration: none;
+}
+.paymentCard {
+  padding: 12px;
+  border-radius: 8px;
+  background: #fff0d2;
+  white-space: pre-wrap;
+}
 form {
   display: flex;
   gap: 10px;

@@ -6,6 +6,49 @@ import { Avatar } from "./avatar";
 
 const mediaURL = (message: Message) =>
   "/api/media?" + new URLSearchParams({ chat_id: message.chat_id, message_id: message.id });
+const thumbnailURL = (message: Message) =>
+  mediaURL(message).replace("/api/media?", "/api/thumbnail?");
+
+function SharedCard({ message }: { message: Message }) {
+  const [playable, setPlayable] = useState(message.kind === "channels");
+  const [thumbnail, setThumbnail] = useState(!!message.link?.thumbnail);
+  const link = message.link!;
+  return (
+    <div className="linkCard">
+      {playable ? (
+        <video
+          className="attachmentVideo"
+          controls
+          preload="metadata"
+          src={mediaURL(message)}
+          poster={thumbnail ? thumbnailURL(message) : undefined}
+          onError={() => setPlayable(false)}
+        />
+      ) : (
+        thumbnail && (
+          <img
+            className="attachmentImage"
+            src={thumbnailURL(message)}
+            alt="Shared card preview"
+            onError={() => setThumbnail(false)}
+          />
+        )
+      )}
+      {link.url ? (
+        <a href={link.url} target="_blank" rel="noreferrer">
+          <strong>{link.title}</strong>
+        </a>
+      ) : (
+        <strong>{link.title}</strong>
+      )}
+      {link.description && <span>{link.description}</span>}
+      <small>{link.source || (link.url ? new URL(link.url).hostname : "WeChat Channels")}</small>
+      {message.kind === "channels" && !playable && (
+        <small>Video playback is unavailable in the current WeChat package.</small>
+      )}
+    </div>
+  );
+}
 
 async function api<T>(
   method: string,
@@ -441,11 +484,9 @@ function App() {
                         {m.media?.name || "Download file"}
                       </a>
                     ) : m.link ? (
-                      <a className="linkCard" href={m.link.url} target="_blank" rel="noreferrer">
-                        <strong>{m.link.title}</strong>
-                        <span>{m.link.description}</span>
-                        <small>{new URL(m.link.url).hostname}</small>
-                      </a>
+                      <SharedCard message={m} />
+                    ) : m.read_only ? (
+                      <div className="paymentCard">{m.text}</div>
                     ) : (
                       (m.text ??
                       (m.kind === "location"
@@ -454,7 +495,7 @@ function App() {
                     )}
                   </div>
                   {m.mentions?.length && <small>{m.mentions.map(name).join(", ")}</small>}
-                  {m.kind !== "system" && /^\d+$/.test(m.id) && (
+                  {m.kind !== "system" && !m.read_only && /^\d+$/.test(m.id) && (
                     <button
                       className="replyButton"
                       type="button"

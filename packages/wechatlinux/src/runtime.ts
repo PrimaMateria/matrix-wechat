@@ -21,9 +21,15 @@ import {
 } from "@zxing/library";
 import * as frida from "frida";
 import { PNG } from "pngjs";
-import { attachmentChecksum, receivedFile, receivedImage, receivedVideo } from "./attachments";
+import {
+  attachmentChecksum,
+  receivedFile,
+  receivedImage,
+  receivedThumbnail,
+  receivedVideo,
+} from "./attachments";
 import { voiceAudioProcess } from "./audio";
-import { imageType, stickerImage } from "./media";
+import { imageType, sharedCardAsset, stickerImage } from "./media";
 import { outboundProfileSchema, storageProfileSchema } from "./native/profiles";
 import { loginRequestSchema, textMessageSchema, validateParams } from "./schemas";
 import { Storage } from "./storage";
@@ -555,8 +561,8 @@ export class Runtime {
         let response;
         if (message.reply_to !== undefined) {
           const quoted = await this.store.message(message.chat_id, message.reply_to);
-          if (quoted.kind === "system")
-            throw new APIError("invalid_params", "System messages cannot be quoted");
+          if (quoted.kind === "system" || quoted.read_only)
+            throw new APIError("invalid_params", "Read-only messages cannot be quoted");
           const contacts = await this.store.contacts();
           response = await this.native("sendreply", message.chat_id, message.text, {
             id: quoted.id,
@@ -608,10 +614,24 @@ export class Runtime {
       };
     });
     if (voice) return voiceAudioProcess(voice);
+    if (message.kind === "channels") return sharedCardAsset(message, join(data, "media"));
     if (message.kind === "image") return receivedImage(message);
     if (message.kind === "file") return receivedFile(message);
     if (message.kind === "video") return receivedVideo(message);
     return stickerImage(message, join(data, "media"));
+  }
+  async thumbnail(chat: string, id: string) {
+    const message = await this.operation(() => {
+      if (this.status.state !== "logged_in")
+        throw new APIError("not_ready", "WeChat is still signing in");
+      return this.store.message(chat, id);
+    });
+    try {
+      return await receivedThumbnail(message);
+    } catch (error) {
+      if (!(error instanceof APIError) || error.code !== "media_unavailable") throw error;
+    }
+    return sharedCardAsset(message, join(data, "media"), true);
   }
   async close() {
     if (this.stopped) return;

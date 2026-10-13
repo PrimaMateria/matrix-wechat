@@ -42,6 +42,8 @@ export const capabilities = {
     "file",
     "location",
     "link",
+    "WeChat Channels cards and covers (video when playable)",
+    "read-only transfers and red packets",
     "system",
     "revocation",
   ],

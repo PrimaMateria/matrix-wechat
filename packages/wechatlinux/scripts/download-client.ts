@@ -9,7 +9,18 @@ async function download(url: string, destination: string) {
         await response.body?.cancel();
         throw new Error(`Client download returned HTTP ${response.status}`);
       }
-      await Bun.write(destination, response);
+      if (!response.body) throw new Error("Client download has no response body");
+      // Stream explicitly: Bun 1.3 can hang when writing a large Response directly.
+      await Bun.write(destination, new Uint8Array());
+      const writer = Bun.file(destination).writer();
+      try {
+        for await (const chunk of response.body) {
+          writer.write(chunk);
+          await writer.flush();
+        }
+      } finally {
+        await writer.end();
+      }
       return;
     } catch (error) {
       await Bun.file(destination)

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { basename } from "node:path";
 import { XMLParser } from "fast-xml-parser";
+import { channelMedia } from "./media";
 import {
   APIError,
   type Contact,
@@ -292,9 +293,55 @@ export class Storage {
               url: url.href,
               title: String(app.title || url.hostname),
               description: String(app.des || ""),
+              source: String(app.sourcedisplayname || ""),
+              thumbnail: !!(app.thumburl || app.appattach?.cdnthumbmd5),
             };
           }
         } catch {}
+      }
+      if (String(app.type) === "51" && app.finderFeed) {
+        const feed = app.finderFeed,
+          media = channelMedia(app);
+        let url = "";
+        try {
+          const value = new URL(String(app.url || ""));
+          if (["https:", "http:"].includes(value.protocol) && !value.username && !value.password)
+            url = value.href;
+        } catch {}
+        m.kind = "channels";
+        m.link = {
+          url,
+          title: String(feed.desc || app.title || "WeChat Channels"),
+          description: String(media?.title || ""),
+          source: String(feed.nickname || "WeChat Channels"),
+          thumbnail: !!(media?.coverUrl || media?.thumbUrl),
+        };
+        m.media = {
+          id: m.id,
+          kind: "video",
+          state: "pending",
+          width: num(media?.width),
+          height: num(media?.height),
+          duration: num(media?.videoPlayDuration) * 1000,
+        };
+      }
+      if (["2000", "2001"].includes(String(app.type))) {
+        const pay = app.wcpayinfo || {},
+          transfer = String(app.type) === "2000";
+        m.kind = transfer ? "transfer" : "red_packet";
+        m.read_only = true;
+        m.text = [
+          transfer ? "WeChat transfer" : "WeChat red packet",
+          pay.feedesc,
+          pay.pay_memo,
+          m.own ? pay.sendertitle : pay.receivertitle,
+          m.own ? pay.senderdes : pay.receiverdes,
+          app.title,
+          app.des,
+        ]
+          .filter((value) => typeof value === "string" && value.trim())
+          .filter((value, index, values) => values.indexOf(value) === index)
+          .join("\n");
       }
     }
     const location = root?.msg?.location || root?.location;
