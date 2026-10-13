@@ -50,7 +50,7 @@ After login, the bridge creates private Matrix rooms for visible WeChat conversa
 
 Incoming messages include text, replies, mentions, images, stickers/GIFs, cached MP4 video, voice decoded to WAV, files, locations, system notices, shared links, and WeChat Channels cards. Article cards include a compact thumbnail beside their title and description; Channels retain a video cover and show video only when the existing runtime can provide playable bytes. Cached names, avatars, group announcements, and rosters are mirrored.
 
-Transfers and red packets are **read only**: Matrix receives a formatted card with the available amount, memo or greeting, and a read-only label. The bridge cannot collect a transfer or open a red packet. Card layouts use [Matrix-supported HTML](https://spec.matrix.org/v1.19/client-server-api/#mroommessage-msgtypes), with plain-text fallbacks and link-preview metadata for clients that support it; appearance varies by Matrix client.
+Transfers and red packets are **read only**: Matrix receives a formatted card with the available amount, memo or greeting, and a read-only label. The bridge cannot collect a transfer or open a red packet. They can be quoted like other normal messages; system messages cannot be quoted. Card layouts use [Matrix-supported HTML](https://spec.matrix.org/v1.19/client-server-api/#mroommessage-msgtypes), with plain-text fallbacks and link-preview metadata for clients that support it; appearance varies by Matrix client.
 
 Missing cached media produces a readable placeholder and is retried. Explicit revocations redact the corresponding Matrix event; disappearance from storage does not imply revocation.
 
@@ -90,4 +90,17 @@ CI caches Docker layers separately for each amd64 image using the GitHub Actions
 
 To view CI logs, open Actions, select a run, and select its `matrix-bridge` or `wechat-runtime` job. If GitHub's job viewer shows no steps, raw logs may still be available through `gh run view RUN_ID --log` (for example, `gh run view 38475530231 --log`). Use `--log-failed` to filter failed steps when GitHub's step metadata is available. Lint, type checks, tests, and bundling output appear inside **Build and cache verification image**; reused Docker layers appear as `CACHED` and do not repeat their previous output.
 
-`bun run test:matrix` runs [the end-to-end script](packages/matrix-bridge/scripts/e2e.ts). It builds both local images, starts separate runtime, Synapse, and bridge containers, registers a test Matrix owner and appservice, and starts the ADB login watcher. Scan the QR manually if no saved account is available. It checks history/media, rich cards, restart deduplication and runtime outage recovery, and **sends real text, replies, images, files, and video only to File Transfer**. The account must have a cached File Transfer conversation and cached image, file, and MP4 examples; those actual bytes are reused for sending. Red packets and transfers are never sent or collected. If running, it temporarily stops the standalone `wechatlinux-demo` container to prevent concurrent access to account files, then restores it. Login approval may be needed. Override images with `BRIDGE_IMAGE` and `WECHAT_RUNTIME_IMAGE`; override the existing container with `WECHATLINUX_CONTAINER`. Private artifacts stay under ignored `data/matrix-acceptance/`.
+The [E2E runner](packages/matrix-bridge/scripts/e2e.ts) has focused cases:
+
+```sh
+bun run test:matrix all --build   # Rebuild both images and run every case
+bun run test:matrix quote        # Only text reference + quoted reply
+bun run test:matrix image file video
+bun run test:matrix history      # History, rich cards, and exact received media
+bun run test:matrix restart outage
+bun run test:matrix permissions encryption
+```
+
+Without `--build`, existing local images are reused; missing images are built automatically. Each run starts separate runtime, Synapse, and bridge containers, registers a test Matrix owner and appservice, and starts the ADB login watcher. Scan the QR manually if no saved account is available. All outgoing tests target **File Transfer only**. Transfers and red packets are never sent or collected; incoming payment cards are checked in the history case. Images, files, and MP4 tests reuse actual cached account bytes, so those examples must be available in the account.
+
+If running, the standalone `wechatlinux-demo` container is temporarily stopped to prevent concurrent account access, then restored. Override images with `BRIDGE_IMAGE` and `WECHAT_RUNTIME_IMAGE`; override the existing container with `WECHATLINUX_CONTAINER`. Private logs and proof summaries stay under ignored `data/matrix-acceptance/`.
