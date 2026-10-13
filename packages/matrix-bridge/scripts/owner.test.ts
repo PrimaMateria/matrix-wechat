@@ -64,3 +64,29 @@ test("rejects a credential for a different owner before starting the appservice"
   await expect(matrix.start()).rejects.toThrow("does not match bridge.owner");
   expect(run).not.toHaveBeenCalled();
 });
+
+test("double-puppeted sends use the owner identity, preserve timestamps, and mark echoes", async () => {
+  const matrix = await fixture("owner-secret", "join");
+  const request = spyOn(globalThis, "fetch").mockResolvedValue(
+    Response.json({ event_id: "$mirrored" }),
+  );
+  expect(
+    await matrix.send(
+      matrix.config.bridge.owner,
+      "!room:example.com",
+      "m.room.message",
+      { msgtype: "m.text", body: "from WeChat" },
+      "transaction",
+      1234567890000,
+    ),
+  ).toBe("$mirrored");
+  const [url, options] = request.mock.calls[0];
+  const parsed = new URL(String(url));
+  expect(parsed.searchParams.get("user_id")).toBe(matrix.config.bridge.owner);
+  expect(parsed.searchParams.get("ts")).toBe("1234567890000");
+  expect(options?.method).toBe("PUT");
+  expect(JSON.parse(String(options?.body))).toMatchObject({
+    body: "from WeChat",
+    "fi.mau.double_puppet_source": "matrix-wechat",
+  });
+});

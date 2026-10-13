@@ -23,6 +23,8 @@ export class WeChatBridge {
   private timer?: ReturnType<typeof setInterval>;
   private connection: Status = { state: "starting" };
   private lastMetadata = 0;
+  private lastMediaRetry = 0;
+  private usableRooms = new Set<string>();
   private management = "";
   private contacts = new Map<string, Contact>();
   private groups = new Map<string, Group>();
@@ -52,6 +54,11 @@ export class WeChatBridge {
   }
   accept(event: MatrixEvent) {
     if (!event.event_id || !event.room_id || !event.sender || !event.content) return;
+    if (
+      event.sender === this.config.bridge.owner &&
+      event.content["fi.mau.double_puppet_source"] === "matrix-wechat"
+    )
+      return;
     const knownRoom =
       Boolean(this.store.portalForRoom(event.room_id)) ||
       event.room_id === this.store.meta("management");
@@ -85,7 +92,7 @@ export class WeChatBridge {
     for (const portal of this.store.all<{ room: string }>("SELECT room FROM portals"))
       await this.matrix.joinOwner(portal.room);
     await this.tick();
-    this.timer = setInterval(() => void this.tick(), 5000);
+    this.timer = setInterval(() => void this.tick(), 1000);
   }
   async stop() {
     this.stopped = true;
@@ -103,6 +110,7 @@ export class WeChatBridge {
   }
   async usable(room: string) {
     if (this.store.meta(`encrypted:${room}`)) return false;
+    if (this.usableRooms.has(room)) return true;
     const encrypted = await this.matrix.encrypted(room);
     if (encrypted) {
       this.store.setMeta(`encrypted:${room}`, "true");
@@ -112,6 +120,7 @@ export class WeChatBridge {
         `encrypted-room:${room}`,
       );
     }
+    if (!encrypted) this.usableRooms.add(room);
     return !encrypted;
   }
   private async status() {
@@ -246,7 +255,7 @@ export class WeChatBridge {
           this.account,
           ...(group ? (group.members || []).map((m) => m.id) : [portal.chat]),
         ]),
-      ];
+      ].filter((id) => !(this.matrix.ownerToken && id === this.account));
       const metadata = JSON.stringify({
         name,
         topic: group?.topic || "",
@@ -349,7 +358,10 @@ export class WeChatBridge {
     if (!(await this.usable(portal.room))) return false;
     if (!existing && this.held(message)) return false;
     // An echoed Matrix event belongs to the owner: don't impersonate or reupload it.
-    if (existing?.sender === this.config.bridge.owner) {
+    if (
+      existing?.sender === this.config.bridge.owner &&
+      this.store.get("SELECT id FROM inbox WHERE id=?", existing.event)
+    ) {
       this.store.saveMapping(message, existing.event, existing.sender, fingerprint);
       return true;
     }
@@ -357,7 +369,9 @@ export class WeChatBridge {
       existing?.sender ||
       (message.kind === "system" || !message.sender_id
         ? this.matrix.bot
-        : await this.joinGhost(portal.room, message.sender_id));
+        : message.own && this.matrix.ownerToken
+          ? this.config.bridge.owner
+          : await this.joinGhost(portal.room, message.sender_id));
     const converted = await this.content(message);
     if (existing?.fingerprint === fingerprint && converted.missingMedia) return true;
     const originalType = existing ? this.store.meta(`message_type:${existing.event}`) : undefined;
@@ -461,8 +475,11 @@ export class WeChatBridge {
       chat: portal.chat,
       cursor: portal.cursor || undefined,
     });
-    for (const message of page.messages)
+    for (let index = 0; index < page.messages.length; index++) {
+      const message = page.messages[index];
       if (!(await this.receive(message, portal))) this.store.queue(message);
+      if ((index + 1) % 20 === 0) await this.jobs();
+    }
     this.store.progress(this.account, portal.chat, page.cursor, page.done);
     // ID promotion and source updates don't necessarily advance a history keyset.
     if (page.done) {
@@ -724,8 +741,10 @@ export class WeChatBridge {
   async tick() {
     if (this.busy || this.stopped) return;
     this.busy = true;
+    this.usableRooms.clear();
     try {
       await this.status();
+      await this.jobs();
       if (this.connection.state === "logged_in") {
         if (Date.now() - this.lastMetadata >= 60000) await this.metadata();
         else
@@ -750,9 +769,13 @@ export class WeChatBridge {
           this.lastError = errorCode(error) || "reconciliation_failed";
           console.error("Bridge reconciliation:", this.lastError);
         }
+        await this.jobs();
       }
       await this.redactions();
-      await this.retryMedia();
+      if (Date.now() - this.lastMediaRetry >= 5000) {
+        this.lastMediaRetry = Date.now();
+        await this.retryMedia();
+      }
     } catch (error) {
       this.lastError = errorCode(error) || "bridge_operation_failed";
       console.error("Bridge:", this.lastError);

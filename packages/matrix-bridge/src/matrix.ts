@@ -76,16 +76,22 @@ export class Matrix {
     }
     await this.sdk.run(this.config.appservice.port, undefined, this.config.appservice.hostname);
   }
-  private async ownerAPI(path: string, method: "GET" | "POST") {
+  private async ownerAPI(
+    path: string,
+    method: "GET" | "POST" | "PUT",
+    content?: Record<string, any>,
+    timestamp?: number,
+  ) {
     const url = new URL(path, this.config.homeserver.address);
     url.searchParams.set("user_id", this.config.bridge.owner);
+    if (timestamp) url.searchParams.set("ts", String(timestamp));
     const response = await fetch(url, {
       method,
       headers: {
         Authorization: `Bearer ${this.ownerToken}`,
         "Content-Type": "application/json",
       },
-      body: method === "POST" ? "{}" : undefined,
+      body: method === "GET" ? undefined : JSON.stringify(content || {}),
       redirect: "error",
       signal: AbortSignal.timeout(30000),
     });
@@ -93,7 +99,7 @@ export class Matrix {
       await response.body?.cancel();
       throw new Error(`Matrix owner request failed (${response.status})`);
     }
-    return response.json() as Promise<{ user_id?: string; room_id?: string }>;
+    return response.json() as Promise<{ user_id?: string; room_id?: string; event_id?: string }>;
   }
   async joinOwner(room: string) {
     if (!this.ownerToken || this.ownerJoined.has(room)) return room;
@@ -202,6 +208,17 @@ export class Matrix {
     transaction: string,
     timestamp?: number,
   ) {
+    if (sender === this.config.bridge.owner && this.ownerToken) {
+      await this.joinOwner(room);
+      const result = await this.ownerAPI(
+        `/_matrix/client/v3/rooms/${encodeURIComponent(room)}/send/${encodeURIComponent(type)}/${encodeURIComponent(transaction)}`,
+        "PUT",
+        { ...content, "fi.mau.double_puppet_source": "matrix-wechat" },
+        timestamp,
+      );
+      if (!result.event_id) throw new Error("Matrix owner send returned no event ID");
+      return result.event_id;
+    }
     const intent = this.sdk.getIntent(sender);
     await intent.ensureRegistered();
     await intent.join(room);
