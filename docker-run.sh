@@ -1,21 +1,16 @@
 #!/bin/sh
-
-if [[ ! -f /data/config.yaml ]]; then
-	cp /opt/matrix-wechat/example-config.yaml /data/config.yaml
-	echo "Didn't find a config file."
-	echo "Copied default config file to /data/config.yaml"
-	echo "Modify that config file to your liking."
-	echo "Start the container again after that to generate the registration file."
-	exit
+set -eu
+if [ "$#" -gt 0 ]; then
+    exec /usr/bin/matrix-wechat "$@"
 fi
-
-if [[ ! -f /data/registration.yaml ]]; then
-	/usr/bin/matrix-wechat -g -c /data/config.yaml -r /data/registration.yaml
-	echo "Didn't find a registration file."
-	echo "Generated one for you."
-	echo "See https://docs.mau.fi/bridges/general/registering-appservices.html on how to use it."
-	exit
+if [ ! -f /data/config.yaml ]; then
+    cp /opt/matrix-wechat/example-config.yaml /data/config.yaml
+    echo "Created /data/config.yaml. Configure your homeserver and permissions, then restart."
+    exit 0
 fi
-
-cd /data && exec /usr/bin/matrix-wechat
-exit 1
+if [ ! -f /data/registration.yaml ]; then
+    /usr/bin/matrix-wechat -g -c /data/config.yaml -r /data/registration.yaml
+    echo "Created registration.yaml. Register it with the homeserver before restarting."
+    exit 0
+fi
+exec /usr/bin/matrix-wechat -c /data/config.yaml -r /data/registration.yaml

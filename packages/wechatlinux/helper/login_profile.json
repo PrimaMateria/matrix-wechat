@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "artifact": {
+    "sha256": "2749535f299ba67feb8ef80cab898bb0531fa8f376b16f8a72db706811c84132",
+    "build_id": "d62bde21b26c5928e7dea826271e21a542b755b5",
+    "elf_type": "ET_DYN",
+    "architecture": "x86_64",
+    "address_kind": "module_relative_virtual_address",
+    "sqlite_version": "3.27.2"
+  },
+  "functions": {
+    "login_view_model_constructor": "0x487f250",
+    "login_view_model_destructor": "0x48808e0",
+    "check_login_qrcode": "0x487fb20",
+    "switch_account_and_request_qrcode": "0x4884710"
+  },
+  "validation_bytes": {
+    "login_view_model_constructor": "554157415641554154534881ec280100",
+    "login_view_model_destructor": "415653504889fb488d05ca01e7054883",
+    "check_login_qrcode": "554157415641554154534881ec280200",
+    "switch_account_and_request_qrcode": "554157415641554154534881ec180500"
+  },
+  "objects": {
+    "login_view_model_vtable_rva": "0xa6f0ac8",
+    "login_window_to_model_offset": 632,
+    "switch_account_widget_offsets": [
+      1664,
+      1672
+    ]
+  },
+  "signatures": {
+    "switch_account_and_request_qrcode": {
+      "return": "void",
+      "arguments": [
+        "pointer"
+      ],
+      "thread": "Qt GUI owner thread"
+    }
+  },
+  "evidence": {
+    "type": "static_native_UI_signal_slot_wiring",
+    "window_connection_function": "0x48605a0",
+    "connection_instruction_addresses": [
+      "0x486089e",
+      "0x486090e"
+    ],
+    "clicked_signal_rva": "0x5e80200",
+    "slot_callbacks": [
+      "0x4874550",
+      "0x4874580"
+    ],
+    "slot_target": "0x4884710"
+  },
+  "runtime_verified": false,
+  "constraints": [
+    "Invoke only through the existing single persistent helper session.",
+    "Require live LoginViewModel with expected vtable; constructor capture invalidated on destructor.",
+    "Execute on the Qt GUI owning thread; direct Frida RPC thread invocation is unverified.",
+    "This action deliberately clears remembered login info and requests another QR; requires switch-account authorization."
+  ]
+}

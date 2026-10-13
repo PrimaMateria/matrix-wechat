@@ -1,12 +1,81 @@
-.vscode
-
+# Editor and OS files
+.vscode/
 .DS_Store
 
-vendor/
+# Build products and local tooling
+/vendor/
+/build/
+/dist/
+/matrix-wechat
+__pycache__/
+*.pyc
+.venv/
 
-logs/
-
+# Personal runtime configuration; example templates remain publishable
 config.yaml
+config.yml
+configure.yaml
 registration.yaml
-matrix-wechat.db
+registration.yml
+*.local.yaml
+*.local.yml
+.env
+.env.*
+!.env.example
+!.env.template
 
+# Login credentials and local session/account state
+/data/
+state/
+sessions/
+secrets/
+client.json
+credentials.json
+tokens.json
+*-token
+*.token
+*.key
+*.pem
+*.p12
+*.pfx
+
+# Chat databases, encryption state, and backups
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.bak
+*.backup
+/backups/
+
+# Logs and reverse-engineering captures may contain private chat/account data
+logs/
+*.log
+captures/
+evidence/
+artifacts/
+*.pcap
+*.pcapng
+*.dmp
+core
+core.*
+
+# WeChat API private runtime artifacts
+wechat_api/private/
+wechat_api/runtime/
+wechat_api/captures/
+wechat_api/**/*.png
+wechat_api/**/*.jpg
+wechat_api/**/*.dmp
+packages/wechatlinux/state/
+.xwechat/
+xwechat_files/
+*.kvdb
+*.xlog
+*.mmap3
+login-qr*.png
+
+# Keep the WeChat investigation and API notes local until reviewed
+/wechat_api/

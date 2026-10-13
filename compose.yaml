@@ -1,0 +1,17 @@
+services:
+  bridge:
+    image: ghcr.io/yamada-sexta/matrix-wechat:master
+    build: .
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+      # Enable only for network.backend: fake:
+      # - ./fixtures:/fixtures:ro
+    ports:
+      - "127.0.0.1:17778:17778"
+    environment:
+      TZ: UTC
+
+# In data/config.yaml set appservice.hostname to 0.0.0.0.
+# Set appservice.address to an address the homeserver can reach.
+# Prefer a shared internal Docker network with a containerized homeserver.
