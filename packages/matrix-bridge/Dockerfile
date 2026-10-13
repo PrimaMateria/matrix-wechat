@@ -10,6 +10,7 @@ RUN bun install --frozen-lockfile --filter matrix-wechat-bridge --filter wechat-
 COPY .gitignore ./
 COPY packages/wechat-rpc ./packages/wechat-rpc
 COPY packages/matrix-bridge ./packages/matrix-bridge
+COPY example-config.yaml ./example-config.yaml
 RUN bun run --cwd packages/wechat-rpc check && bun run --cwd packages/wechat-rpc lint \
     && bun run --cwd packages/matrix-bridge check && bun run --cwd packages/matrix-bridge lint
 RUN bun test packages/matrix-bridge/scripts/qr.test.ts packages/matrix-bridge/scripts/owner.test.ts
