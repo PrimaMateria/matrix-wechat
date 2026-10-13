@@ -11,18 +11,31 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 jobs:
+  changes:
+    name: Select changed images
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.changes.outputs.matrix }}
+      build: ${{ steps.changes.outputs.build }}
+    steps:
+      - name: Check out source and change history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Test change selection
+        run: python3 .github/scripts/test_changed_images.py
+      - name: Select image builds
+        id: changes
+        run: python3 .github/scripts/changed_images.py
   build:
     name: ${{ matrix.package }}
+    needs: changes
+    if: needs.changes.outputs.build == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - package: matrix-bridge
-            suffix: ''
-          - package: wechat-runtime
-            suffix: '-runtime'
+      matrix: ${{ fromJSON(needs.changes.outputs.matrix) }}
     permissions:
       contents: read
       packages: write

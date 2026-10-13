@@ -90,6 +90,8 @@ Both Dockerfiles use the repository root as their build context. CI builds and p
 
 CI caches Docker layers separately for each amd64 image using the GitHub Actions cache. The runtime prepares and verifies its read-only client before copying application code, so source changes reuse the large client layer. Dependency layers depend on the workspace manifests and lockfile. Cache export has a five-minute timeout and is best-effort; build and verification failures still fail CI. The first build after a client or cache change may be slower while it populates the cache.
 
+CI builds only images affected by a push or pull request. Bridge and runtime changes select their own image; shared RPC code, workspace manifests, the lockfile, Docker context exclusions, and CI changes select both. Documentation and deployment-only changes skip image builds. Release tags and manual runs build both images.
+
 To view CI logs, open Actions, select a run, and select its `matrix-bridge` or `wechat-runtime` job. If GitHub's job viewer shows no steps, raw logs may still be available through `gh run view RUN_ID --log` (for example, `gh run view 38475530231 --log`). Use `--log-failed` to filter failed steps when GitHub's step metadata is available. Lint, type checks, tests, and bundling output appear inside **Build and cache verification image**; reused Docker layers appear as `CACHED` and do not repeat their previous output.
 
 The [E2E runner](packages/matrix-bridge/scripts/e2e.ts) has focused cases:
