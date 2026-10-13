@@ -363,7 +363,9 @@ export class Storage {
       m.media = { id: m.id, kind: m.kind, state: "pending" };
     if (m.media) {
       const metadata = root?.msg || root;
-      m.media.checksum = String(metadata?.videomsg?.md5 || app?.md5 || metadata?.img?.md5 || "").toLowerCase() || undefined;
+      m.media.checksum =
+        String(metadata?.videomsg?.md5 || app?.md5 || metadata?.img?.md5 || "").toLowerCase() ||
+        undefined;
     }
     if (m.kind === "file" && app && m.media) {
       m.media.name = String(app.title || "File");

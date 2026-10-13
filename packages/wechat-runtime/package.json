@@ -22,7 +22,8 @@
     "react-dom": "^19.3.0",
     "silk-wasm": "^3.7.1",
     "zod": "^4.6.7",
-    "wechat-rpc": "workspace:*"
+    "wechat-rpc": "workspace:*",
+    "@trpc/server": "11.19.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",

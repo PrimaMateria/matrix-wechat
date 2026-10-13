@@ -15,6 +15,10 @@ export const configSchema = z
         registration: z.string().default("/data/registration.yaml"),
       })
       .strict(),
+    wechat: z
+      .object({ address: z.url().default("http://wechat-runtime:18743") })
+      .strict()
+      .default({ address: "http://wechat-runtime:18743" }),
     bridge: z
       .object({
         owner: z.string().regex(/^@[^:]+:.+$/),

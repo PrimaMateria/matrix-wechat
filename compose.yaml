@@ -1,21 +1,36 @@
 services:
-  bridge:
-    image: ghcr.io/yamada-sexta/matrix-wechat:master
-    build: .
+  wechat-runtime:
+    image: ghcr.io/yamada-sexta/matrix-wechat-runtime:master
+    build:
+      context: .
+      dockerfile: packages/wechat-runtime/Dockerfile
     restart: unless-stopped
     cap_drop: [ALL]
     cap_add: [SYS_PTRACE, SYS_CHROOT]
     security_opt: [no-new-privileges:true]
     shm_size: 256m
     volumes:
-      - ./data/bridge:/data:Z
       - ./data/wechat:/home/wechat:Z
     ports:
-      - "127.0.0.1:17778:17778"
       - "127.0.0.1:18742:18742"
+    expose: ["18743"]
     environment:
       TZ: UTC
-
-# Configuration: data/bridge/config.yaml. Saved WeChat login: data/wechat.
-# Set appservice.address to an address the homeserver can reach.
-# Prefer a shared internal Docker network with a containerized homeserver.
+      WECHAT_API_TOKEN: ${WECHAT_API_TOKEN:?Set WECHAT_API_TOKEN in .env}
+      WECHAT_WEB_UI: ${WECHAT_WEB_UI:-true}
+  bridge:
+    image: ghcr.io/yamada-sexta/matrix-wechat:master
+    build:
+      context: .
+      dockerfile: packages/matrix-bridge/Dockerfile
+    restart: unless-stopped
+    depends_on: [wechat-runtime]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - ./data/bridge:/data:Z
+    ports:
+      - "127.0.0.1:17778:17778"
+    environment:
+      TZ: UTC
+      WECHAT_API_TOKEN: ${WECHAT_API_TOKEN:?Set WECHAT_API_TOKEN in .env}

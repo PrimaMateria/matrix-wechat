@@ -1,8 +1,7 @@
 import { chmod, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { AppServiceRegistration } from "matrix-appservice-bridge";
-import { privateAPI } from "../../wechat-runtime/src/private-api";
-import { createHandler } from "../../wechat-runtime/src/server";
+import { createClient } from "wechat-rpc";
 import { WeChatBridge } from "./bridge";
 import { loadConfig } from "./config";
 import { generateRegistration, Matrix } from "./matrix";
@@ -81,8 +80,9 @@ export async function main(args = Bun.argv.slice(2)) {
   await mkdir(dirname(config.database.path), { recursive: true, mode: 0o700 });
   const store = new Store(config.database.path);
   await chmod(config.database.path, 0o600);
-  const { Runtime } = await import("../../wechat-runtime/src/runtime");
-  const runtime = new Runtime();
+  const token = process.env.WECHAT_API_TOKEN;
+  if (!token) throw new Error("WECHAT_API_TOKEN is required to connect to the WeChat runtime");
+  const runtime = createClient(config.wechat.address, token);
   let engine: WeChatBridge;
   const matrix = new Matrix(
     config,
@@ -90,36 +90,21 @@ export async function main(args = Bun.argv.slice(2)) {
     (event) => engine.accept(event),
     (mxid) => Boolean(store.get("SELECT mxid FROM ghosts WHERE mxid=?", mxid)),
   );
-  let web: ReturnType<typeof Bun.serve> | undefined;
-  let closePrivate: (() => Promise<void>) | undefined;
   let closing = false;
   const close = async (failed = false) => {
     if (closing) return;
     closing = true;
+    runtime.close();
     await engine?.stop();
-    await closePrivate?.();
-    await runtime.close();
-    await web?.stop(true);
     await matrix.close();
     store.close();
     process.exit(failed ? 1 : 0);
   };
-  engine = new WeChatBridge(config, runtime, matrix, store, () => {
-    console.error("Native client disconnected; restarting deployment");
-    void close(true);
-  });
+  engine = new WeChatBridge(config, runtime, matrix, store);
   process.on("SIGTERM", () => void close());
   process.on("SIGINT", () => void close());
   try {
     await matrix.start();
-    web = Bun.serve({
-      hostname: "0.0.0.0",
-      port: 18742,
-      idleTimeout: 0,
-      fetch: createHandler(runtime),
-    });
-    closePrivate = await privateAPI(runtime);
-    await runtime.start();
     await engine.start();
     console.log("Matrix–WeChat bridge ready. Management room invites go to the configured owner.");
     console.log(`Supported sends: ${capabilities.sending.join(", ")}`);

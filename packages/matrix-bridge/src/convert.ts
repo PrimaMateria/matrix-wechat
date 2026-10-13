@@ -68,9 +68,9 @@ export function incoming(
     if (safe || message.kind === "channels")
       content = {
         msgtype: "m.text",
-        body: [title, description, url].filter(Boolean).join("\n"),
+        body: [title, description, message.link.source, url].filter(Boolean).join("\n"),
         format: "org.matrix.custom.html",
-        formatted_body: `${safe ? `<a href="${escapeHTML(url)}">${escapeHTML(title)}</a>` : escapeHTML(title)}${description ? `<br>${escapeHTML(description)}` : ""}${message.link.source ? `<br>${escapeHTML(message.link.source)}` : ""}`,
+        formatted_body: `<strong>${safe ? `<a href="${escapeHTML(url)}">${escapeHTML(title)}</a>` : escapeHTML(title)}</strong>${description ? `<p>${escapeHTML(description)}</p>` : ""}${message.link.source ? `<p>${escapeHTML(message.link.source)}</p>` : ""}`,
       };
     if (options.thumbnail && options.thumbnailMxc) {
       const imageInfo = {
@@ -78,22 +78,44 @@ export function incoming(
         size: options.thumbnail.bytes.length,
         ...dimensions(options.thumbnail.bytes, options.thumbnail.type),
       };
-      content["com.beeper.linkpreviews"] = [
-        {
-          matched_url: url,
-          "og:url": url,
-          "og:title": title,
-          "og:description": description,
-          "og:image": options.thumbnailMxc,
-          "og:image:type": imageInfo.mimetype,
-          "matrix:image:size": imageInfo.size,
-          "og:image:width": imageInfo.w,
-          "og:image:height": imageInfo.h,
-        },
-      ];
-      content.formatted_body = `<img src="${escapeHTML(options.thumbnailMxc)}" alt="${escapeHTML(title)}"><br>${content.formatted_body || escapeHTML(content.body)}`;
+      if (safe)
+        content["com.beeper.linkpreviews"] = [
+          {
+            matched_url: url,
+            "og:url": url,
+            "og:title": title,
+            "og:description": description,
+            "og:image": options.thumbnailMxc,
+            "og:image:type": imageInfo.mimetype,
+            "matrix:image:size": imageInfo.size,
+            "og:image:width": imageInfo.w,
+            "og:image:height": imageInfo.h,
+          },
+        ];
+      const bound = message.kind === "channels" ? 320 : 96;
+      const scale = Math.min(1, bound / Math.max(imageInfo.w || bound, imageInfo.h || bound));
+      const size =
+        imageInfo.w && imageInfo.h
+          ? ` width="${Math.round(imageInfo.w * scale)}" height="${Math.round(imageInfo.h * scale)}"`
+          : ` width="${bound}"`;
+      const image = `<img src="${escapeHTML(options.thumbnailMxc)}" alt="${escapeHTML(title)}"${size}>`;
+      const text = content.formatted_body || escapeHTML(content.body);
+      content.formatted_body =
+        message.kind === "channels"
+          ? `${image}<br>${text}`
+          : `<table><tbody><tr><td>${text}</td><td>${image}</td></tr></tbody></table>`;
       content.format = "org.matrix.custom.html";
     }
+  }
+  if (message.payment) {
+    const { amount, description } = message.payment;
+    const title = message.kind === "red_packet" ? "🧧 WeChat red packet" : "💸 WeChat transfer";
+    content = {
+      msgtype: "m.notice",
+      body: [title, amount, description, "Read only"].filter(Boolean).join("\n"),
+      format: "org.matrix.custom.html",
+      formatted_body: `<blockquote><p><strong>${title}</strong></p>${amount ? `<p><strong>${escapeHTML(amount)}</strong></p>` : ""}${description ? `<p>${escapeHTML(description)}</p>` : ""}<p><em>Read only</em></p></blockquote>`,
+    };
   }
   if (message.kind === "location" && message.location) {
     const { latitude, longitude, label } = message.location;

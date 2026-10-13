@@ -8,7 +8,7 @@ export const apiRequestSchema = z.object({
 });
 export type APIRequest = z.infer<typeof apiRequestSchema>;
 
-export { textMessageSchema, loginRequestSchema } from "wechat-rpc/schemas";
+export { loginRequestSchema, textMessageSchema } from "wechat-rpc/schemas";
 
 export function validateParams<T>(schema: z.ZodType<T>, input: unknown): T {
   const result = schema.safeParse(input);

@@ -1,19 +1,4 @@
 export type Row = Record<string, any>;
-export interface Database {
-  id: string;
-  path: string;
-  readable: boolean;
-  encrypted: boolean;
-  error?: string;
-}
-export interface NativeDB {
-  databases(): Promise<Database[]>;
-  query(
-    id: string,
-    sql: string,
-    limit: number,
-  ): Promise<{ columns: string[]; rows: any[][]; truncated: boolean }>;
-}
 export interface Contact {
   id: string;
   name: string;

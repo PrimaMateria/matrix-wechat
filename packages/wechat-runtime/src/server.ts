@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { privateAPI } from "./private-api";
+import { createRPCHandler } from "./rpc";
 import { APIError, type Event, publicFields, type Row, type Status } from "./types";
 export interface Backend {
   sendImage?(chat: string, bytes: Buffer): Promise<unknown>;
@@ -249,33 +250,51 @@ async function main() {
       "container_required",
       "Start the container launcher; host WeChat execution is disabled",
     );
-  const runtime = new Runtime(),
-    server = Bun.serve({
-      hostname: "0.0.0.0",
-      port: 18742,
-      idleTimeout: 0,
-      fetch: createHandler(runtime),
-    });
+  const runtime = new Runtime();
+  const server =
+    process.env.WECHAT_WEB_UI !== "false"
+      ? Bun.serve({
+          hostname: "0.0.0.0",
+          port: 18742,
+          idleTimeout: 0,
+          fetch: createHandler(runtime),
+        })
+      : undefined;
+  const api = process.env.WECHAT_API_TOKEN
+    ? Bun.serve({
+        hostname: "0.0.0.0",
+        port: 18743,
+        // Native upload validation owns attachment size restrictions.
+        maxRequestBodySize: 64 * 1024 * 1024 + 16384,
+        fetch: createRPCHandler(runtime, process.env.WECHAT_API_TOKEN),
+      })
+    : undefined;
   const closePrivate = await privateAPI(runtime);
   let closing = false;
-  const close = async () => {
+  const close = async (failed = false) => {
     if (closing) return;
     closing = true;
     await closePrivate();
     await runtime.close();
-    await server.stop(true);
-    process.exit(0);
+    await server?.stop(true);
+    await api?.stop(true);
+    process.exit(failed ? 1 : 0);
   };
+  runtime.onEvent((event) => {
+    if (event.type === "connection.closed") void close(true);
+  });
   process.on("SIGTERM", () => void close());
   process.on("SIGINT", () => void close());
   try {
     await runtime.start();
-    console.log("Web: http://127.0.0.1:18742/");
+    if (server) console.log("Web: http://127.0.0.1:18742/");
+    if (api) console.log("Runtime API listening on :18743");
   } catch (e) {
     console.error(e instanceof APIError ? e.code : "startup_failed");
     await closePrivate();
     await runtime.close();
-    await server.stop(true);
+    await server?.stop(true);
+    await api?.stop(true);
     process.exitCode = 1;
   }
 }

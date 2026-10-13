@@ -8,6 +8,8 @@ appservice:
   port: 17778
   bot_username: wechatbot
   registration: /data/registration.yaml
+wechat:
+  address: http://wechat-runtime:18743
 bridge:
   owner: '@you:example.com'
   command_prefix: '!wechat'

@@ -4,8 +4,11 @@ import { join } from "node:path";
 import { XMLParser } from "fast-xml-parser";
 import { protobufBytes } from "./protobuf";
 import { APIError, type Message } from "./types";
+
 export { imageType } from "wechat-rpc/types";
+
 import { imageType } from "wechat-rpc/types";
+
 const xml = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "",

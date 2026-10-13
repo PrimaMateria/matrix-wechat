@@ -11,10 +11,13 @@ const root = resolve(import.meta.dir, "../../..");
 const engine = process.env.CONTAINER_ENGINE || "podman";
 const original = process.env.WECHATLINUX_CONTAINER || "wechatlinux-demo";
 const image = process.env.BRIDGE_IMAGE || "localhost/matrix-wechat:dev";
+const runtimeImage = process.env.WECHAT_RUNTIME_IMAGE || "localhost/wechatlinux-demo:dev";
+const apiToken = crypto.randomUUID();
 const synapseImage = "docker.io/matrixdotorg/synapse:v1.162.0";
 const directory = resolve(root, "data/matrix-acceptance", crypto.randomUUID());
 const bridgeName = "matrix-wechat-acceptance",
   synapseName = "matrix-wechat-synapse",
+  runtimeName = "matrix-wechat-runtime-acceptance",
   network = "matrix-wechat-acceptance";
 const server = "acceptance.local",
   owner = `@owner:${server}`;
@@ -94,6 +97,7 @@ console.log(`Live source: ${conversations.length} conversations, ${source.length
 const config = configSchema.parse({
   homeserver: { address: `http://${synapseName}:8008`, domain: server },
   appservice: { address: `http://${bridgeName}:17778`, registration: "/data/registration.yaml" },
+  wechat: { address: `http://${runtimeName}:18743` },
   bridge: { owner },
   database: { path: "/data/matrix-wechat.db" },
 });
@@ -193,7 +197,7 @@ async function joinPortals() {
   for (const { room } of rooms)
     await matrix(`/_matrix/client/v3/join/${encodeURIComponent(room)}`, "POST", {});
 }
-for (const name of [bridgeName, synapseName])
+for (const name of [bridgeName, runtimeName, synapseName])
   assert(
     (await run([engine, "container", "exists", name], true)).code !== 0,
     "acceptance container names are unused",
@@ -202,6 +206,10 @@ try {
   assert(
     (await run([engine, "image", "exists", image], true)).code === 0,
     "bridge image has been built",
+  );
+  assert(
+    (await run([engine, "image", "exists", runtimeImage], true)).code === 0,
+    "runtime image has been built",
   );
   if ((await run([engine, "image", "exists", synapseImage], true)).code !== 0) {
     // Reuse the installed pinned Synapse image when Docker and Podman stores differ.
@@ -254,7 +262,7 @@ try {
     "run",
     "-d",
     "--name",
-    bridgeName,
+    runtimeName,
     "--network",
     network,
     "--userns",
@@ -270,13 +278,33 @@ try {
     "--shm-size",
     "256m",
     "-p",
-    "127.0.0.1:17778:17778",
-    "-p",
     "127.0.0.1:18742:18742",
-    "-v",
-    `${directory}/bridge:/data:Z`,
+    "-e",
+    `WECHAT_API_TOKEN=${apiToken}`,
     "-v",
     `${root}/data/wechat:/home/wechat:Z`,
+    runtimeImage,
+  ]);
+  await run([
+    engine,
+    "run",
+    "-d",
+    "--name",
+    bridgeName,
+    "--network",
+    network,
+    "--userns",
+    "keep-id:uid=1000,gid=1000",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "-p",
+    "127.0.0.1:17778:17778",
+    "-e",
+    `WECHAT_API_TOKEN=${apiToken}`,
+    "-v",
+    `${directory}/bridge:/data:Z`,
     image,
   ]);
   watcher = Bun.spawn(["bun", "packages/wechat-runtime/scripts/adb-login.ts", "--watch"], {
@@ -352,7 +380,7 @@ try {
   );
   const before = mappings.map((m) => [m.chat, m.id, m.event]);
   await run([engine, "restart", "--time", "20", bridgeName]);
-  await waitFor("restart and account resumption", ready, 240000);
+  await waitFor("bridge restart and history reconciliation", ready, 240000);
   mappings = await capture();
   assert(
     JSON.stringify(before) === JSON.stringify(mappings.map((m) => [m.chat, m.id, m.event])),
@@ -653,7 +681,7 @@ try {
   );
 } finally {
   watcher?.kill();
-  for (const name of [bridgeName, synapseName]) {
+  for (const name of [bridgeName, runtimeName, synapseName]) {
     const logs = await run([engine, "logs", name], true);
     await Bun.write(`${directory}/${name}.log`, logs.stdout);
     await run([engine, "rm", "--force", name], true);

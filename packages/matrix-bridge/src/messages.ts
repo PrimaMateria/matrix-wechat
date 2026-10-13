@@ -1,5 +1,4 @@
-import { attachmentChecksum } from "../../wechat-runtime/src/attachments";
-import { APIError, type Message } from "../../wechat-runtime/src/types";
+import { APIError, type Message } from "wechat-rpc";
 
 export type {
   Contact,
@@ -8,7 +7,7 @@ export type {
   Group,
   Message,
   Status,
-} from "../../wechat-runtime/src/types";
+} from "wechat-rpc";
 export interface Asset {
   bytes: Buffer;
   type: string;
@@ -20,11 +19,7 @@ export function checksum(bytes: Buffer) {
 export function sendFingerprint(message: Message): string {
   if (message.kind === "text")
     return JSON.stringify(["text", message.text || "", message.reply_to || ""]);
-  try {
-    return JSON.stringify(["attachment", attachmentChecksum(message)]);
-  } catch {
-    return "";
-  }
+  return message.media?.checksum ? JSON.stringify(["attachment", message.media.checksum]) : "";
 }
 export function unsupported(operation: string): never {
   throw new APIError("unsupported", `${operation} is not supported by the current WeChat runtime`);

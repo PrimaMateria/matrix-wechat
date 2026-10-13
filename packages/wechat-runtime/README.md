@@ -1,4 +1,4 @@
-# WeChat native API
+# WeChat runtime
 
 Container-only WeChat Linux 4.1.13 instrumentation, Bun + TypeScript API, and React chat UI. The native executable is pinned by SHA-256.
 
@@ -11,7 +11,7 @@ Open http://127.0.0.1:18742/. The service resumes the client's saved account aut
 
 The Dockerfile downloads the original vendor AppImage from the repository's [pinned client release](https://github.com/yamada-sexta/matrix-wechat/releases/tag/wechat-client-4.1.13-4526180b), retries transient failures up to three times, checks the SHA-256 from the native ABI profile, and extracts and verifies the executable during build. `WECHAT_APPIMAGE_URL` can override the download mirror while retaining the same hash pin. The expected AppImage hash is `4526180bca980128791599af122ff4795002a5715a510f6a65480e2be6874244`. A changed download fails the build. Both hashes are checked again before startup. The client installation is read-only to the runtime user; the image contains no account data.
 
-The build runs lint, type checking and tests, then builds the native hook and React UI with locked Bun dependencies. CI builds the same amd64 Dockerfile and checks the bundled client without launching WeChat. Writable account state is mounted from repository `data/wechat` to container `/home/wechat`. The launcher publishes only `127.0.0.1:18742`, uses private PID/display namespaces, and grants `SYS_PTRACE` for Frida plus `SYS_CHROOT` for the embedded browser sandbox. No host home, display, or IPC is mounted. Server startup rejects host execution.
+The Dockerfile lives in this package, but its build context is the repository root so it can include `packages/wechat-rpc`. The build runs lint, type checking and tests, then builds the native hook and React UI with the root workspace lockfile. CI builds the same amd64 Dockerfile and checks the bundled client without launching WeChat. Writable account state is mounted from repository `data/wechat` to container `/home/wechat`. The launcher publishes only `127.0.0.1:18742`, uses private PID/display namespaces, and grants `SYS_PTRACE` for Frida plus `SYS_CHROOT` for the embedded browser sandbox. No host home, display, or IPC is mounted. Server startup rejects host execution.
 
 ```sh
 packages/wechat-runtime/scripts/container.sh stop
@@ -24,13 +24,22 @@ Stop/start preserves state. Rebuild and stop/start after source changes; no manu
 Development checks do not launch WeChat:
 
 ```sh
-cd packages/wechat-runtime
 bun install --frozen-lockfile
-bun run check
-bun run lint
-bun test
-bun run build
+bun run --cwd packages/wechat-runtime check
+bun run --cwd packages/wechat-runtime lint
+bun run --cwd packages/wechat-runtime test
+bun run --cwd packages/wechat-runtime build
 ```
+
+## Service API and optional web UI
+
+The Matrix bridge runs in a separate container and connects through the shared `wechat-rpc` client. Set `WECHAT_API_TOKEN` to enable the authenticated API on port `18743`; every request requires `Authorization: Bearer <token>`. Without a token this listener is disabled. Compose supplies the same token to both services and keeps this port internal.
+
+The typed tRPC API at `/trpc` exposes status, contacts, groups, conversations, resumable history, recent messages, revocations, login retry, text sends, and multipart image/file uploads. Authenticated `/assets/avatar`, `/assets/media`, `/assets/thumbnail`, and `/assets/qr` return binary bytes without base64 encoding. History carries public media checksums for echo correlation; native raw records stay inside this service.
+
+`WECHAT_WEB_UI` defaults to `true`. Set it to `false` to disable the separate web UI/HTTP listener on `18742`; the authenticated API remains available. The standalone launcher loads the repository `.env` if present and accepts exported `WECHAT_API_TOKEN` and `WECHAT_WEB_UI` overrides. It publishes only the web UI port. Use the root [Compose configuration](../../compose.yaml) for a bridge/runtime deployment on a shared network.
+
+The local web UI keeps its existing HTTP API:
 
 HTTP API: `GET /api/status`, `/api/contacts`, `/api/groups`, `/api/conversations`, `/api/history?chat_id=...&limit=50&cursor=...`, `/api/capabilities`; `GET /api/events` provides Server-Sent Events; `POST /api/send` accepts `{ "chat_id": "...", "kind": "text", "text": "..." }`. Native IDs remain decimal strings. Browser responses exclude native raw rows, key material, and paths. Errors use `{ "error": { "code": "...", "message": "..." } }`.
 
@@ -42,7 +51,7 @@ Native ABI metadata lives in `src/native/*_profile.toml`. Bun's TOML reader load
 
 Git ignores account data, local notes, dependencies, build output, QR images, logs, databases, and captures. No personal data belongs in source, fixtures, or the Docker build context.
 
-To approve desktop login requests from an ADB-connected phone, run this on the host while the container runs:
+To approve desktop login requests from an ADB-connected phone, run this on the host while the container runs with the web UI listener enabled:
 
 ```sh
 bun packages/wechat-runtime/scripts/adb-login.ts --watch

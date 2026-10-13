@@ -1,6 +1,4 @@
-import { imageType } from "../../wechat-runtime/src/media";
-import type { Runtime } from "../../wechat-runtime/src/runtime";
-import { APIError } from "../../wechat-runtime/src/types";
+import { APIError, errorCode, imageType, type Status, type WeChatClient } from "wechat-rpc";
 import type { Config } from "./config";
 import { ghostID, incoming, messageFingerprint, outgoing } from "./convert";
 import type { Matrix } from "./matrix";
@@ -23,7 +21,7 @@ export class WeChatBridge {
   private busy = false;
   private stopped = false;
   private timer?: ReturnType<typeof setInterval>;
-  private unsubscribe?: () => void;
+  private connection: Status = { state: "starting" };
   private lastMetadata = 0;
   private management = "";
   private contacts = new Map<string, Contact>();
@@ -33,22 +31,21 @@ export class WeChatBridge {
   lastError = "";
   constructor(
     readonly config: Config,
-    readonly runtime: Runtime,
+    readonly runtime: WeChatClient,
     readonly matrix: Matrix,
     readonly store: Store,
-    readonly fatal: () => void = () => {},
   ) {}
   private async contactsList(): Promise<Contact[]> {
-    return (await this.runtime.dispatch("contacts")).contacts;
+    return await this.runtime.rpc.contacts.query();
   }
   private async groupsList(): Promise<Group[]> {
-    return (await this.runtime.dispatch("groups")).groups;
+    return await this.runtime.rpc.groups.query();
   }
   private async conversationsList(): Promise<Conversation[]> {
-    return (await this.runtime.dispatch("conversations")).conversations;
+    return await this.runtime.rpc.conversations.query();
   }
   get account() {
-    return this.runtime.status.account?.id || "";
+    return this.connection.account?.id || "";
   }
   ghost(id: string) {
     return ghostID(this.account, id, this.config.homeserver.domain);
@@ -84,30 +81,12 @@ export class WeChatBridge {
         true,
       ));
     this.store.setMeta("management", this.management);
-    this.unsubscribe = this.runtime.onEvent((event) => {
-      if (event.message) this.store.queue(event.message);
-      if (
-        event.type === "message.revoked" &&
-        event.account_id &&
-        event.chat_id &&
-        event.data?.message_id
-      )
-        this.store.run(
-          "INSERT OR IGNORE INTO revocations VALUES(?,?,?)",
-          event.account_id,
-          event.chat_id,
-          String(event.data.message_id),
-        );
-      if (event.type === "connection.closed") this.fatal();
-      // Deletion is deliberately ignored: cache disappearance is not revocation.
-    });
     await this.tick();
     this.timer = setInterval(() => void this.tick(), 5000);
   }
   async stop() {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
-    this.unsubscribe?.();
     while (this.busy) await Bun.sleep(25);
   }
   async notice(room: string, text: string, key: string) {
@@ -133,7 +112,9 @@ export class WeChatBridge {
     return !encrypted;
   }
   private async status() {
-    const state = this.runtime.status.state;
+    const snapshot = await this.runtime.rpc.status.query();
+    this.connection = snapshot.status;
+    const state = this.connection.state;
     if (this.store.meta("connection_state") !== state) {
       const generation = Number(this.store.meta("connection_generation") || "0") + 1;
       await this.notice(
@@ -147,11 +128,12 @@ export class WeChatBridge {
     if (
       state === "awaiting_scan" &&
       (await this.usable(this.management)) &&
-      this.runtime.qr &&
-      this.runtime.qrAt > Number(this.store.meta("qr_at") || "0")
+      snapshot.qrAvailable &&
+      snapshot.qrAt > Number(this.store.meta("qr_at") || "0")
     ) {
+      const qr = await this.runtime.asset("qr");
       const mxc = await this.matrix.upload({
-        bytes: this.runtime.qr,
+        bytes: qr.bytes,
         type: "image/png",
         name: "wechat-login.png",
       });
@@ -163,11 +145,11 @@ export class WeChatBridge {
           msgtype: "m.image",
           body: "Scan with WeChat, then approve on your phone",
           url: mxc,
-          info: { mimetype: "image/png", size: this.runtime.qr.length },
+          info: { mimetype: "image/png", size: qr.bytes.length },
         },
-        hash(`qr:${this.runtime.qrAt}`),
+        hash(`qr:${snapshot.qrAt}`),
       );
-      this.store.setMeta("qr_at", String(this.runtime.qrAt));
+      this.store.setMeta("qr_at", String(snapshot.qrAt));
     }
   }
   private async assetUpload(bytes: Buffer, type: string, name?: string) {
@@ -211,11 +193,10 @@ export class WeChatBridge {
   }
   private async avatar(id: string): Promise<string | undefined> {
     try {
-      const asset = await this.runtime.avatar(id);
+      const asset = await this.runtime.asset("avatar", { id });
       return await this.assetUpload(asset.bytes, asset.type);
     } catch (error) {
-      if (!(error instanceof APIError) || !["not_found", "media_unavailable"].includes(error.code))
-        throw error;
+      if (!["not_found", "media_unavailable"].includes(errorCode(error) || "")) throw error;
     }
   }
   private async joinGhost(room: string, id: string) {
@@ -297,26 +278,22 @@ export class WeChatBridge {
     let missingMedia = false;
     if (mediaKinds.has(message.kind)) {
       try {
-        asset = await this.runtime.media(message.chat_id, message.id);
+        asset = await this.runtime.asset("media", { chat: message.chat_id, id: message.id });
       } catch (error) {
-        if (
-          !(error instanceof APIError) ||
-          !["not_found", "media_unavailable", "unsupported"].includes(error.code)
-        )
+        if (!["not_found", "media_unavailable", "unsupported"].includes(errorCode(error) || ""))
           throw error;
-        missingMedia = error.code !== "unsupported";
+        missingMedia = errorCode(error) !== "unsupported";
       }
       if (asset) mxc = await this.assetUpload(asset.bytes, asset.type, asset.name);
     }
     if (message.link?.thumbnail) {
       try {
-        thumbnail = await this.runtime.thumbnail(message.chat_id, message.id);
+        thumbnail = await this.runtime.asset("thumbnail", {
+          chat: message.chat_id,
+          id: message.id,
+        });
       } catch (error) {
-        if (
-          !(error instanceof APIError) ||
-          !["not_found", "media_unavailable"].includes(error.code)
-        )
-          throw error;
+        if (!["not_found", "media_unavailable"].includes(errorCode(error) || "")) throw error;
         missingMedia = true;
       }
       if (thumbnail) thumbnailMxc = await this.assetUpload(thumbnail.bytes, thumbnail.type);
@@ -473,13 +450,12 @@ export class WeChatBridge {
   }
   private async reconcile(portal: Portal) {
     if (!(await this.usable(portal.room))) return;
-    const recent = await this.runtime.operation(() =>
-      this.runtime.store.bridgeRecent(portal.chat, 500),
-    );
+    const recent = await this.runtime.rpc.recent.query({ chat: portal.chat });
     await this.confirmPending(portal.chat, recent);
-    const page = await this.runtime.operation(() =>
-      this.runtime.store.bridgeHistory(portal.chat, portal.cursor || undefined, 200),
-    );
+    const page = await this.runtime.rpc.history.query({
+      chat: portal.chat,
+      cursor: portal.cursor || undefined,
+    });
     for (const message of page.messages)
       if (!(await this.receive(message, portal))) this.store.queue(message);
     this.store.progress(this.account, portal.chat, page.cursor, page.done);
@@ -498,7 +474,7 @@ export class WeChatBridge {
     }
   }
   private async redactions() {
-    for (const revoke of await this.runtime.operation(() => this.runtime.store.bridgeRevocations()))
+    for (const revoke of await this.runtime.rpc.revocations.query())
       this.store.run(
         "INSERT OR IGNORE INTO revocations VALUES(?,?,?)",
         this.account,
@@ -541,12 +517,12 @@ export class WeChatBridge {
       response =
         "Commands: help, login [saved|qr], status, capabilities, list contacts, list groups, start-chat <WeChat ID>, sync. Native mentions are received; outgoing text does not construct native mentions. Leaving a Matrix room does not leave the WeChat group.";
     else if (command === "status")
-      response = `WeChat: ${this.runtime.status.state}. Rooms: ${this.store.portals(this.account).length}. History imports pending: ${this.store.portals(this.account).filter((p) => !p.imported).length}.${this.lastError ? ` Last reconciliation error: ${this.lastError}.` : ""}`;
+      response = `WeChat: ${this.connection.state}. Rooms: ${this.store.portals(this.account).length}. History imports pending: ${this.store.portals(this.account).filter((p) => !p.imported).length}.${this.lastError ? ` Last reconciliation error: ${this.lastError}.` : ""}`;
     else if (command === "capabilities") response = JSON.stringify(capabilities, null, 2);
     else if (command === "login") {
       const mode = args[0] || "saved";
       if (!["saved", "qr"].includes(mode)) throw new Error("Use login saved or login qr");
-      await this.runtime.dispatch("login.retry", { mode });
+      await this.runtime.rpc.login.mutate({ mode: mode as "saved" | "qr" });
       response = "Login requested. Scan the QR if shown and approve on your phone.";
     } else if (command === "list" && args[0] === "contacts")
       response =
@@ -557,7 +533,7 @@ export class WeChatBridge {
         (await this.groupsList()).map((g) => `${g.id}: ${g.name}`).join("\n") ||
         "No cached groups.";
     else if (command === "start-chat" && args.length === 1) {
-      if (this.runtime.status.state !== "logged_in") throw new Error("WeChat is not logged in");
+      if (this.connection.state !== "logged_in") throw new Error("WeChat is not logged in");
       const known =
         (await this.contactsList()).some((c) => c.id === args[0]) ||
         (await this.conversationsList()).some((c) => c.id === args[0]);
@@ -618,7 +594,7 @@ export class WeChatBridge {
       throw new Error("This room is not connected to the current WeChat account");
     if (event.type === "m.room.encrypted") unsupported("Encrypted messages");
     if (event.type !== "m.room.message") unsupported(`Sending ${event.type}`);
-    if (this.runtime.status.state !== "logged_in")
+    if (this.connection.state !== "logged_in")
       throw new APIError("not_ready", "WeChat is disconnected; send is waiting for login");
     // At most one unresolved native send per chat makes identical-send correlation safe.
     if (
@@ -666,9 +642,10 @@ export class WeChatBridge {
       message.kind === "text"
         ? JSON.stringify(["text", message.text, reply || ""])
         : JSON.stringify(["attachment", checksum(bytes!)]);
-    const baseline = (
-      await this.runtime.operation(() => this.runtime.store.bridgeRecent(portal.chat, 500))
-    ).flatMap((m) => [m.id, m.local_key || m.id]);
+    const baseline = (await this.runtime.rpc.recent.query({ chat: portal.chat })).flatMap((m) => [
+      m.id,
+      m.local_key || m.id,
+    ]);
     this.store.run(
       "UPDATE inbox SET state='sending',account=?,chat=?,fingerprint=?,baseline=?,started=? WHERE id=?",
       this.account,
@@ -680,21 +657,24 @@ export class WeChatBridge {
     );
     try {
       if (message.kind === "text")
-        await this.runtime.dispatch("send", {
+        await this.runtime.rpc.send.mutate({
           chat_id: portal.chat,
           kind: "text",
           text: message.text,
           reply_to: reply,
         });
-      else if (message.kind === "image") await this.runtime.sendImage(portal.chat, bytes!);
-      else await this.runtime.sendFile(portal.chat, bytes!, name);
+      else if (message.kind === "image")
+        await this.runtime.upload(portal.chat, bytes!, name, "image");
+      else await this.runtime.upload(portal.chat, bytes!, name, "file");
     } catch (error) {
       // Explicit preflight/rejection errors are safe failures; unknown native errors may have sent.
-      const safe =
-        error instanceof APIError &&
-        ["invalid_params", "not_ready", "unsupported", "unverified", "send_failed"].includes(
-          error.code,
-        );
+      const safe = [
+        "invalid_params",
+        "not_ready",
+        "unsupported",
+        "unverified",
+        "send_failed",
+      ].includes(errorCode(error) || "");
       this.store.run("UPDATE inbox SET state=? WHERE id=?", safe ? "failed" : "uncertain", job.id);
       throw error;
     }
@@ -708,8 +688,7 @@ export class WeChatBridge {
         if (state !== "wait") this.store.run("UPDATE inbox SET state=? WHERE id=?", state, job.id);
       } catch (error) {
         const current = this.store.get<Inbox>("SELECT * FROM inbox WHERE id=?", job.id)!;
-        if (error instanceof APIError && error.code === "not_ready" && current.state === "queued")
-          continue;
+        if (errorCode(error) === "not_ready" && current.state === "queued") continue;
         const uncertain = current.state === "uncertain";
         await this.notice(
           event.room_id,
@@ -731,7 +710,7 @@ export class WeChatBridge {
     this.busy = true;
     try {
       await this.status();
-      if (this.runtime.status.state === "logged_in") {
+      if (this.connection.state === "logged_in") {
         const bound = this.store.meta("account");
         if (bound && bound !== this.account) {
           await this.notice(
@@ -743,9 +722,12 @@ export class WeChatBridge {
         }
         this.store.setMeta("account", this.account);
         if (Date.now() - this.lastMetadata >= 60000) await this.metadata();
+        else
+          for (const conversation of await this.conversationsList())
+            await this.ensurePortal(conversation.id, conversation.name);
       }
       await this.jobs();
-      if (this.runtime.status.state !== "logged_in") return;
+      if (this.connection.state !== "logged_in") return;
       for (const row of this.store.all<{ chat: string }>(
         "SELECT DISTINCT chat FROM incoming WHERE account=?",
         this.account,
@@ -759,14 +741,14 @@ export class WeChatBridge {
         try {
           await this.reconcile(portal);
         } catch (error) {
-          this.lastError = error instanceof APIError ? error.code : "reconciliation_failed";
+          this.lastError = errorCode(error) || "reconciliation_failed";
           console.error("Bridge reconciliation:", this.lastError);
         }
       }
       await this.redactions();
       await this.retryMedia();
     } catch (error) {
-      this.lastError = error instanceof APIError ? error.code : "bridge_operation_failed";
+      this.lastError = errorCode(error) || "bridge_operation_failed";
       console.error("Bridge:", this.lastError);
     } finally {
       this.busy = false;

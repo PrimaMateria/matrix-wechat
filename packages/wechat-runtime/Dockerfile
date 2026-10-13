@@ -1,21 +1,25 @@
 FROM docker.io/oven/bun:1.3.14 AS client
 # Download the validated release asset with retries; the native profile owns the hash pin.
 ARG WECHAT_APPIMAGE_URL=https://github.com/yamada-sexta/matrix-wechat/releases/download/wechat-client-4.1.13-4526180b/WeChatLinux_x86_64.AppImage
-COPY scripts/download-client.ts /tmp/download-client.ts
-COPY src/native/storage_profile.toml /tmp/storage_profile.toml
+COPY packages/wechat-runtime/scripts/download-client.ts /tmp/download-client.ts
+COPY packages/wechat-runtime/src/native/storage_profile.toml /tmp/storage_profile.toml
 RUN bun /tmp/download-client.ts "$WECHAT_APPIMAGE_URL" /opt/wechat-client/WeChatLinux_x86_64.AppImage /tmp/storage_profile.toml
 
 FROM docker.io/oven/bun:1.3.14 AS build
-WORKDIR /opt/wechatlinux
+WORKDIR /opt/matrix-wechat
 # Frida's npm install script invokes `node`; Bun provides that executable here.
 RUN ln -sf /usr/local/bin/bun /usr/local/bin/node
 COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
-RUN bun -e 'const f=await import("frida");await f.getLocalDevice();console.log("Frida binding works under Bun")'
-COPY tsconfig.json biome.json .gitignore ./
-COPY src ./src
-COPY tests ./tests
-COPY scripts/adb-login.ts scripts/download-client.ts ./scripts/
+COPY packages/wechat-runtime/package.json ./packages/wechat-runtime/package.json
+COPY packages/wechat-rpc/package.json ./packages/wechat-rpc/package.json
+COPY packages/matrix-bridge/package.json ./packages/matrix-bridge/package.json
+RUN bun install --frozen-lockfile --filter wechat-runtime --filter wechat-rpc
+RUN cd packages/wechat-runtime && bun -e 'const f=await import("frida");await f.getLocalDevice();console.log("Frida binding works under Bun")'
+COPY .gitignore ./
+COPY packages/wechat-rpc ./packages/wechat-rpc
+COPY packages/wechat-runtime ./packages/wechat-runtime
+RUN bun run --cwd packages/wechat-rpc check && bun run --cwd packages/wechat-rpc lint
+WORKDIR /opt/matrix-wechat/packages/wechat-runtime
 RUN bun run lint && bun run check && bun run test && bun run build
 
 FROM docker.io/oven/bun:1.3.14 AS runtime
@@ -29,11 +33,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxcb-util1 libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb1 libxcomposite1 libxcursor1 libxdamage1 libxext6 libxfixes3 \
     libxi6 libxkbcommon0 libxkbcommon-x11-0 libxrandr2 libxrender1 libxtst6 \
     && rm -rf /var/lib/apt/lists/*
-WORKDIR /opt/wechatlinux
-COPY --from=build /opt/wechatlinux/package.json /opt/wechatlinux/bun.lock ./
-COPY --from=build /opt/wechatlinux/node_modules ./node_modules
-COPY --from=build /opt/wechatlinux/src ./src
-COPY --from=build /opt/wechatlinux/dist ./dist
+WORKDIR /opt/matrix-wechat/packages/wechat-runtime
+COPY --from=build /opt/matrix-wechat /opt/matrix-wechat
 COPY --from=client /opt/wechat-client/WeChatLinux_x86_64.AppImage /opt/wechat-client/WeChatLinux_x86_64.AppImage
 ENV WECHAT_INSTALL_DIR=/opt/wechat-client/app
 # Extract and verify both hashes during build, without starting WeChat.
@@ -43,6 +44,6 @@ RUN usermod --home /home/wechat --move-home bun \
     && mkdir -p /tmp/runtime-wechat && chown bun:bun /tmp/runtime-wechat && chmod 0700 /tmp/runtime-wechat
 ENV HOME=/home/wechat XDG_RUNTIME_DIR=/tmp/runtime-wechat
 USER bun
-EXPOSE 18742
+EXPOSE 18742 18743
 STOPSIGNAL SIGTERM
-ENTRYPOINT ["bun", "/opt/wechatlinux/src/server.ts"]
+ENTRYPOINT ["bun", "/opt/matrix-wechat/packages/wechat-runtime/src/server.ts"]
