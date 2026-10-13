@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { publicFields } from "../../wechatlinux/src/types";
+import { publicFields } from "../../wechat-runtime/src/types";
 import type { Message } from "./messages";
 
 export function hash(value: string | Uint8Array) {

@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "wechatlinux-api",
+      "name": "wechat-runtime",
       "dependencies": {
         "@zxing/library": "^0.23.0",
         "fast-xml-parser": "^5.11.2",

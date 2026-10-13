@@ -1,19 +1,19 @@
 FROM docker.io/oven/bun:1.3.14 AS client
 # Download the validated release asset with retries; the native profile owns the hash pin.
 ARG WECHAT_APPIMAGE_URL=https://github.com/yamada-sexta/matrix-wechat/releases/download/wechat-client-4.1.13-4526180b/WeChatLinux_x86_64.AppImage
-COPY packages/wechatlinux/scripts/download-client.ts /tmp/download-client.ts
-COPY packages/wechatlinux/src/native/storage_profile.toml /tmp/storage_profile.toml
+COPY packages/wechat-runtime/scripts/download-client.ts /tmp/download-client.ts
+COPY packages/wechat-runtime/src/native/storage_profile.toml /tmp/storage_profile.toml
 RUN bun /tmp/download-client.ts "$WECHAT_APPIMAGE_URL" /opt/wechat-client/WeChatLinux_x86_64.AppImage /tmp/storage_profile.toml
 
 FROM docker.io/oven/bun:1.3.14 AS build
 WORKDIR /opt/matrix-wechat
 RUN ln -sf /usr/local/bin/bun /usr/local/bin/node
 COPY package.json bun.lock ./
-COPY packages/wechatlinux/package.json ./packages/wechatlinux/package.json
+COPY packages/wechat-runtime/package.json ./packages/wechat-runtime/package.json
 COPY packages/matrix-bridge/package.json ./packages/matrix-bridge/package.json
 RUN bun install --frozen-lockfile
 COPY .gitignore ./
-COPY packages/wechatlinux ./packages/wechatlinux
+COPY packages/wechat-runtime ./packages/wechat-runtime
 COPY packages/matrix-bridge ./packages/matrix-bridge
 RUN bun run check && bun run test && bun run lint && bun run build
 RUN cd packages/matrix-bridge && bun -e 'const m=await import("matrix-appservice-bridge");console.log(typeof m.Bridge)'
@@ -34,7 +34,7 @@ COPY --from=build /opt/matrix-wechat /opt/matrix-wechat
 COPY --from=client /opt/wechat-client/WeChatLinux_x86_64.AppImage /opt/wechat-client/WeChatLinux_x86_64.AppImage
 COPY example-config.yaml /opt/matrix-wechat/example-config.yaml
 ENV WECHAT_INSTALL_DIR=/opt/wechat-client/app
-RUN bun -e 'import {Runtime} from "./packages/wechatlinux/src/runtime.ts";console.log(await new Runtime().executable())' \
+RUN bun -e 'import {Runtime} from "./packages/wechat-runtime/src/runtime.ts";console.log(await new Runtime().executable())' \
     && chmod -R a+rX,a-w /opt/wechat-client
 RUN usermod --home /home/wechat --move-home bun \
     && mkdir -p /data /tmp/runtime-wechat \

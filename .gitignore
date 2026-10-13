@@ -72,7 +72,7 @@ wechat_api/captures/
 wechat_api/**/*.png
 wechat_api/**/*.jpg
 wechat_api/**/*.dmp
-packages/wechatlinux/state/
+packages/wechat-runtime/state/
 .xwechat/
 xwechat_files/
 *.kvdb

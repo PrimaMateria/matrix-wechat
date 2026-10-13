@@ -1,5 +1,5 @@
-import { attachmentChecksum } from "../../wechatlinux/src/attachments";
-import { APIError, type Message } from "../../wechatlinux/src/types";
+import { attachmentChecksum } from "../../wechat-runtime/src/attachments";
+import { APIError, type Message } from "../../wechat-runtime/src/types";
 
 export type {
   Contact,
@@ -8,7 +8,7 @@ export type {
   Group,
   Message,
   Status,
-} from "../../wechatlinux/src/types";
+} from "../../wechat-runtime/src/types";
 export interface Asset {
   bytes: Buffer;
   type: string;

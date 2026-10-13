@@ -1,8 +1,8 @@
 import { chmod, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { AppServiceRegistration } from "matrix-appservice-bridge";
-import { privateAPI } from "../../wechatlinux/src/private-api";
-import { createHandler } from "../../wechatlinux/src/server";
+import { privateAPI } from "../../wechat-runtime/src/private-api";
+import { createHandler } from "../../wechat-runtime/src/server";
 import { WeChatBridge } from "./bridge";
 import { loadConfig } from "./config";
 import { generateRegistration, Matrix } from "./matrix";
@@ -81,7 +81,7 @@ export async function main(args = Bun.argv.slice(2)) {
   await mkdir(dirname(config.database.path), { recursive: true, mode: 0o700 });
   const store = new Store(config.database.path);
   await chmod(config.database.path, 0o600);
-  const { Runtime } = await import("../../wechatlinux/src/runtime");
+  const { Runtime } = await import("../../wechat-runtime/src/runtime");
   const runtime = new Runtime();
   let engine: WeChatBridge;
   const matrix = new Matrix(

@@ -248,10 +248,77 @@ blockquote {
   text-decoration: none;
 }
 .paymentCard {
-  padding: 12px;
+  width: 290px;
+  max-width: 100%;
   border-radius: 8px;
-  background: #fff0d2;
-  white-space: pre-wrap;
+  overflow: hidden;
+  background: #fff9f0;
+  color: #734017;
+  white-space: normal;
+  border: 1px solid #efdcc7;
+}
+.paymentDetails {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 18px 16px;
+}
+.paymentIcon {
+  width: 38px;
+  height: 38px;
+  flex: none;
+  color: #db8a36;
+}
+.paymentTitle {
+  display: block;
+  font-size: 13px;
+  color: #97714e;
+}
+.paymentAmount {
+  display: block;
+  font-size: 26px;
+  line-height: 1.4;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.paymentDetails p {
+  margin: 4px 0 0;
+  line-height: 1.45;
+}
+.paymentFooter {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  border-top: 1px solid #efdcc7;
+  font-size: 11px;
+  color: #927654;
+}
+.red_packet {
+  background: #fff5f2;
+  border-color: #f1d5cf;
+  color: #883d34;
+}
+.red_packet .paymentIcon {
+  color: #cb6656;
+}
+.red_packet .paymentFooter {
+  border-color: #f1d5cf;
+}
+.paymentMessage {
+  padding: 8px;
+}
+.paymentMessage .meta {
+  padding: 0 4px 3px;
+}
+@media (max-width: 650px) {
+  .paymentCard {
+    width: 240px;
+  }
+  .paymentDetails {
+    padding: 14px 12px;
+    gap: 10px;
+  }
 }
 form {
   display: flex;

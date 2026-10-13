@@ -279,7 +279,7 @@ try {
     `${root}/data/wechat:/home/wechat:Z`,
     image,
   ]);
-  watcher = Bun.spawn(["bun", "packages/wechatlinux/scripts/adb-login.ts", "--watch"], {
+  watcher = Bun.spawn(["bun", "packages/wechat-runtime/scripts/adb-login.ts", "--watch"], {
     cwd: root,
     stdout: Bun.file(`${directory}/adb.log`),
     stderr: Bun.file(`${directory}/adb-errors.log`),
@@ -663,7 +663,7 @@ try {
     interrupted = false;
     await run([engine, "start", original]);
     restored = true;
-    watcher = Bun.spawn(["bun", "packages/wechatlinux/scripts/adb-login.ts", "--watch"], {
+    watcher = Bun.spawn(["bun", "packages/wechat-runtime/scripts/adb-login.ts", "--watch"], {
       cwd: root,
       stdout: "ignore",
       stderr: "ignore",

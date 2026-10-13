@@ -330,17 +330,17 @@ export class Storage {
           transfer = String(app.type) === "2000";
         m.kind = transfer ? "transfer" : "red_packet";
         m.read_only = true;
-        m.text = [
-          transfer ? "WeChat transfer" : "WeChat red packet",
-          pay.feedesc,
-          pay.pay_memo,
-          m.own ? pay.sendertitle : pay.receivertitle,
-          m.own ? pay.senderdes : pay.receiverdes,
-          app.title,
-          app.des,
-        ]
-          .filter((value) => typeof value === "string" && value.trim())
-          .filter((value, index, values) => values.indexOf(value) === index)
+        m.payment = {
+          title: transfer ? "Transfer" : "Red packet",
+          amount: typeof pay.feedesc === "string" ? pay.feedesc : undefined,
+          description: String(
+            transfer
+              ? pay.pay_memo || ""
+              : (m.own ? pay.sendertitle : pay.receivertitle) || "Best wishes",
+          ),
+        };
+        m.text = [m.payment.title, m.payment.amount, m.payment.description]
+          .filter(Boolean)
           .join("\n");
       }
     }
@@ -361,6 +361,10 @@ export class Storage {
     if (typeof mentions === "string" && mentions) m.mentions = mentions.split(",").filter(Boolean);
     if (["image", "sticker", "video", "audio", "file"].includes(m.kind))
       m.media = { id: m.id, kind: m.kind, state: "pending" };
+    if (m.media) {
+      const metadata = root?.msg || root;
+      m.media.checksum = String(metadata?.videomsg?.md5 || app?.md5 || metadata?.img?.md5 || "").toLowerCase() || undefined;
+    }
     if (m.kind === "file" && app && m.media) {
       m.media.name = String(app.title || "File");
       const size = Number(app.appattach?.totallen);

@@ -10,27 +10,28 @@ const thumbnailURL = (message: Message) =>
   mediaURL(message).replace("/api/media?", "/api/thumbnail?");
 
 function SharedCard({ message }: { message: Message }) {
-  const [playable, setPlayable] = useState(message.kind === "channels");
-  const [thumbnail, setThumbnail] = useState(!!message.link?.thumbnail);
+  const [preview, setPreview] = useState(
+    message.kind === "channels" ? "video" : message.link?.thumbnail ? "image" : "none",
+  );
   const link = message.link!;
   return (
     <div className="linkCard">
-      {playable ? (
+      {preview === "video" ? (
         <video
           className="attachmentVideo"
           controls
           preload="metadata"
           src={mediaURL(message)}
-          poster={thumbnail ? thumbnailURL(message) : undefined}
-          onError={() => setPlayable(false)}
+          poster={link.thumbnail ? thumbnailURL(message) : undefined}
+          onError={() => setPreview(link.thumbnail ? "image" : "none")}
         />
       ) : (
-        thumbnail && (
+        preview === "image" && (
           <img
             className="attachmentImage"
             src={thumbnailURL(message)}
             alt="Shared card preview"
-            onError={() => setThumbnail(false)}
+            onError={() => setPreview("none")}
           />
         )
       )}
@@ -43,9 +44,47 @@ function SharedCard({ message }: { message: Message }) {
       )}
       {link.description && <span>{link.description}</span>}
       <small>{link.source || (link.url ? new URL(link.url).hostname : "WeChat Channels")}</small>
-      {message.kind === "channels" && !playable && (
+      {message.kind === "channels" && preview !== "video" && (
         <small>Video playback is unavailable in the current WeChat package.</small>
       )}
+    </div>
+  );
+}
+
+function PaymentCard({ message }: { message: Message }) {
+  const payment = message.payment!;
+  return (
+    <div className={`paymentCard ${message.kind}`}>
+      <div className="paymentDetails">
+        <svg
+          className="paymentIcon"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.7"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          {message.kind === "transfer" ? (
+            <path d="M4 8h15m-4-4 4 4-4 4M20 16H5m4-4-4 4 4 4" />
+          ) : (
+            <>
+              <rect x="5" y="3" width="14" height="18" rx="2" />
+              <path d="m5 8 7 5 7-5M10 16h4" />
+            </>
+          )}
+        </svg>
+        <div>
+          <span className="paymentTitle">{payment.title}</span>
+          {payment.amount && <strong className="paymentAmount">{payment.amount}</strong>}
+          {payment.description && <p>{payment.description}</p>}
+        </div>
+      </div>
+      <div className="paymentFooter">
+        <span>WeChat {payment.title.toLowerCase()}</span>
+        <span>Read only</span>
+      </div>
     </div>
   );
 }
@@ -437,7 +476,11 @@ function App() {
               )}
               {ordered.map((m) => (
                 <article
-                  className={"message " + (m.kind === "system" ? "system" : m.own ? "own" : "")}
+                  className={
+                    "message " +
+                    (m.kind === "system" ? "system" : m.own ? "own" : "") +
+                    (m.payment ? " paymentMessage" : "")
+                  }
                   key={m.local_key || m.id}
                 >
                   {m.kind !== "system" && (
@@ -485,8 +528,8 @@ function App() {
                       </a>
                     ) : m.link ? (
                       <SharedCard message={m} />
-                    ) : m.read_only ? (
-                      <div className="paymentCard">{m.text}</div>
+                    ) : m.payment ? (
+                      <PaymentCard message={m} />
                     ) : (
                       (m.text ??
                       (m.kind === "location"

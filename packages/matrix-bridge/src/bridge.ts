@@ -1,6 +1,6 @@
-import { imageType } from "../../wechatlinux/src/media";
-import type { Runtime } from "../../wechatlinux/src/runtime";
-import { APIError } from "../../wechatlinux/src/types";
+import { imageType } from "../../wechat-runtime/src/media";
+import type { Runtime } from "../../wechat-runtime/src/runtime";
+import { APIError } from "../../wechat-runtime/src/types";
 import type { Config } from "./config";
 import { ghostID, incoming, messageFingerprint, outgoing } from "./convert";
 import type { Matrix } from "./matrix";

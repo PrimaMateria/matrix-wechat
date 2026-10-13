@@ -4,15 +4,8 @@ import { join } from "node:path";
 import { XMLParser } from "fast-xml-parser";
 import { protobufBytes } from "./protobuf";
 import { APIError, type Message } from "./types";
-export function imageType(bytes: Uint8Array) {
-  const b = Buffer.from(bytes);
-  if (b.subarray(0, 8).toString("hex") === "89504e470d0a1a0a") return "image/png";
-  if (/^GIF8[79]a$/.test(b.subarray(0, 6).toString())) return "image/gif";
-  if (b.subarray(0, 4).toString() === "RIFF" && b.subarray(8, 12).toString() === "WEBP")
-    return "image/webp";
-  if (b[0] === 255 && b[1] === 216 && b[2] === 255) return "image/jpeg";
-  return undefined;
-}
+export { imageType } from "wechat-rpc/types";
+import { imageType } from "wechat-rpc/types";
 const xml = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "",

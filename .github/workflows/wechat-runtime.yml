@@ -1,9 +1,9 @@
 name: WeChat Linux runtime
 on:
   push:
-    paths: ['packages/wechatlinux/**', '.github/workflows/wechatlinux.yml']
+    paths: ['packages/wechat-runtime/**', '.github/workflows/wechat-runtime.yml']
   pull_request:
-    paths: ['packages/wechatlinux/**', '.github/workflows/wechatlinux.yml']
+    paths: ['packages/wechat-runtime/**', '.github/workflows/wechat-runtime.yml']
   workflow_dispatch:
 
 permissions:
@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Build pinned client and Bun API
-        run: docker build --platform linux/amd64 -t wechatlinux:test packages/wechatlinux
+        run: docker build --platform linux/amd64 -t wechatlinux:test packages/wechat-runtime
       - name: Verify bundled client without launching WeChat
         run: |
           docker run --rm --network none --entrypoint bun wechatlinux:test -e '

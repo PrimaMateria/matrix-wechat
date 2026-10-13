@@ -3,8 +3,8 @@
 Container-only WeChat Linux 4.1.13 instrumentation, Bun + TypeScript API, and React chat UI. The native executable is pinned by SHA-256.
 
 ```sh
-packages/wechatlinux/scripts/container.sh build
-packages/wechatlinux/scripts/container.sh start
+packages/wechat-runtime/scripts/container.sh build
+packages/wechat-runtime/scripts/container.sh start
 ```
 
 Open http://127.0.0.1:18742/. The service resumes the client's saved account automatically. WeChat may require confirmation on the phone. Without a saved account, the page displays the client's QR code.
@@ -14,9 +14,9 @@ The Dockerfile downloads the original vendor AppImage from the repository's [pin
 The build runs lint, type checking and tests, then builds the native hook and React UI with locked Bun dependencies. CI builds the same amd64 Dockerfile and checks the bundled client without launching WeChat. Writable account state is mounted from repository `data/wechat` to container `/home/wechat`. The launcher publishes only `127.0.0.1:18742`, uses private PID/display namespaces, and grants `SYS_PTRACE` for Frida plus `SYS_CHROOT` for the embedded browser sandbox. No host home, display, or IPC is mounted. Server startup rejects host execution.
 
 ```sh
-packages/wechatlinux/scripts/container.sh stop
-packages/wechatlinux/scripts/container.sh start
-packages/wechatlinux/scripts/container.sh logs --tail 30
+packages/wechat-runtime/scripts/container.sh stop
+packages/wechat-runtime/scripts/container.sh start
+packages/wechat-runtime/scripts/container.sh logs --tail 30
 ```
 
 Stop/start preserves state. Rebuild and stop/start after source changes; no manual copying into a running container is needed.
@@ -24,7 +24,7 @@ Stop/start preserves state. Rebuild and stop/start after source changes; no manu
 Development checks do not launch WeChat:
 
 ```sh
-cd packages/wechatlinux
+cd packages/wechat-runtime
 bun install --frozen-lockfile
 bun run check
 bun run lint
@@ -45,7 +45,7 @@ Git ignores account data, local notes, dependencies, build output, QR images, lo
 To approve desktop login requests from an ADB-connected phone, run this on the host while the container runs:
 
 ```sh
-bun packages/wechatlinux/scripts/adb-login.ts --watch
+bun packages/wechat-runtime/scripts/adb-login.ts --watch
 ```
 
 The watcher checks the local API for a pending phone confirmation, matches WeChat's desktop login prompt through Android UI automation, and presses its login button. When WeChat hides accessibility controls, it checks the exact desktop-login activity and locates the large green button from an in-memory screenshot. It waits when the phone is locked. Use `ANDROID_SERIAL` when multiple ADB devices are connected. Omit `--watch` for one check; Ctrl+C stops the watcher. UI dumps are temporary files on the phone and are deleted after each check; account and conversation text are not logged.

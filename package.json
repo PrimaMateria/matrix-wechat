@@ -3,14 +3,21 @@
   "private": true,
   "type": "module",
   "packageManager": "bun@1.3.14",
-  "workspaces": ["packages/wechatlinux", "packages/matrix-bridge"],
-  "trustedDependencies": ["frida", "@matrix-org/matrix-sdk-crypto-nodejs"],
+  "workspaces": [
+    "packages/wechat-runtime",
+    "packages/matrix-bridge",
+    "packages/wechat-rpc"
+  ],
+  "trustedDependencies": [
+    "frida",
+    "@matrix-org/matrix-sdk-crypto-nodejs"
+  ],
   "scripts": {
     "start": "bun packages/matrix-bridge/src/main.ts",
-    "check": "bun run --cwd packages/wechatlinux check && bun run --cwd packages/matrix-bridge check",
-    "test": "bun test packages/wechatlinux/tests packages/matrix-bridge/tests",
-    "build": "bun run --cwd packages/wechatlinux build",
-    "lint": "bun run --cwd packages/wechatlinux lint && bun run --cwd packages/matrix-bridge lint",
+    "check": "bun run --cwd packages/wechat-rpc check && bun run --cwd packages/wechat-runtime check && bun run --cwd packages/matrix-bridge check",
+    "test": "bun test packages/wechat-runtime/tests packages/matrix-bridge/tests",
+    "build": "bun run --cwd packages/wechat-runtime build",
+    "lint": "bun run --cwd packages/wechat-rpc lint && bun run --cwd packages/wechat-runtime lint && bun run --cwd packages/matrix-bridge lint",
     "test:matrix": "bun packages/matrix-bridge/tests/synapse.ts"
   }
 }

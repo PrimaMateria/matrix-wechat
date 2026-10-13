@@ -1,5 +1,5 @@
 {
-  "name": "wechatlinux-api",
+  "name": "wechat-runtime",
   "private": true,
   "type": "module",
   "scripts": {
@@ -21,7 +21,8 @@
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
     "silk-wasm": "^3.7.1",
-    "zod": "^4.6.7"
+    "zod": "^4.6.7",
+    "wechat-rpc": "workspace:*"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
