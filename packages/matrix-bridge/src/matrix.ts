@@ -7,11 +7,13 @@ import { hash, type MatrixEvent } from "./store";
 export class Matrix {
   readonly sdk: Bridge;
   readonly bot: string;
+  private ownerJoined = new Set<string>();
   constructor(
     readonly config: Config,
     readonly registration: AppServiceRegistration,
     accept: (event: MatrixEvent) => void,
     queryGhost: (mxid: string) => boolean,
+    readonly ownerToken = process.env.MATRIX_OWNER_AS_TOKEN,
   ) {
     // Keep the SDK's intents and APIs, with Bun's HTTP implementation. Bun 1.3's
     // undici shim lacks the BodyReadable.bytes() required by this SDK release.
@@ -67,7 +69,49 @@ export class Matrix {
     });
   }
   async start() {
+    if (this.ownerToken) {
+      const identity = await this.ownerAPI("/_matrix/client/v3/account/whoami", "GET");
+      if (identity.user_id !== this.config.bridge.owner)
+        throw new Error("Matrix owner token does not match bridge.owner");
+    }
     await this.sdk.run(this.config.appservice.port, undefined, this.config.appservice.hostname);
+  }
+  private async ownerAPI(path: string, method: "GET" | "POST") {
+    const url = new URL(path, this.config.homeserver.address);
+    url.searchParams.set("user_id", this.config.bridge.owner);
+    const response = await fetch(url, {
+      method,
+      headers: {
+        Authorization: `Bearer ${this.ownerToken}`,
+        "Content-Type": "application/json",
+      },
+      body: method === "POST" ? "{}" : undefined,
+      redirect: "error",
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error(`Matrix owner request failed (${response.status})`);
+    }
+    return response.json() as Promise<{ user_id?: string; room_id?: string }>;
+  }
+  async joinOwner(room: string) {
+    if (!this.ownerToken || this.ownerJoined.has(room)) return room;
+    let membership: unknown;
+    try {
+      membership = (
+        await this.sdk
+          .getIntent()
+          .matrixClient.getRoomStateEventContent(room, "m.room.member", this.config.bridge.owner)
+      ).membership;
+    } catch (error: any) {
+      if (error.errcode === "M_NOT_FOUND") return room;
+      throw error;
+    }
+    if (membership === "invite")
+      await this.ownerAPI(`/_matrix/client/v3/join/${encodeURIComponent(room)}`, "POST");
+    if (membership === "invite" || membership === "join") this.ownerJoined.add(room);
+    return room;
   }
   async close() {
     await this.sdk.close();
@@ -77,35 +121,39 @@ export class Matrix {
     const bot = this.sdk.getIntent();
     await bot.ensureRegistered();
     try {
-      return await bot.matrixClient.resolveRoom(
-        `#${aliasLocalpart}:${this.config.homeserver.domain}`,
+      return await this.joinOwner(
+        await bot.matrixClient.resolveRoom(`#${aliasLocalpart}:${this.config.homeserver.domain}`),
       );
     } catch (error: any) {
       if (error.errcode !== "M_NOT_FOUND") throw error;
     }
     try {
-      return (
-        await bot.createRoom({
-          options: {
-            room_alias_name: aliasLocalpart,
-            name,
-            visibility: "private",
-            preset: "private_chat",
-            invite: [owner],
-            is_direct: direct,
-            initial_state: [
-              {
-                type: "m.room.history_visibility",
-                state_key: "",
-                content: { history_visibility: "shared" },
-              },
-            ],
-          },
-        })
-      ).room_id;
+      return await this.joinOwner(
+        (
+          await bot.createRoom({
+            options: {
+              room_alias_name: aliasLocalpart,
+              name,
+              visibility: "private",
+              preset: "private_chat",
+              invite: [owner],
+              is_direct: direct,
+              initial_state: [
+                {
+                  type: "m.room.history_visibility",
+                  state_key: "",
+                  content: { history_visibility: "shared" },
+                },
+              ],
+            },
+          })
+        ).room_id,
+      );
     } catch (error: any) {
       if (error.errcode !== "M_ROOM_IN_USE") throw error;
-      return bot.matrixClient.resolveRoom(`#${aliasLocalpart}:${this.config.homeserver.domain}`);
+      return this.joinOwner(
+        await bot.matrixClient.resolveRoom(`#${aliasLocalpart}:${this.config.homeserver.domain}`),
+      );
     }
   }
   async profile(mxid: string, name: string, avatar?: string) {

@@ -12,6 +12,7 @@ COPY packages/wechat-rpc ./packages/wechat-rpc
 COPY packages/matrix-bridge ./packages/matrix-bridge
 RUN bun run --cwd packages/wechat-rpc check && bun run --cwd packages/wechat-rpc lint \
     && bun run --cwd packages/matrix-bridge check && bun run --cwd packages/matrix-bridge lint
+RUN bun test packages/matrix-bridge/scripts/qr.test.ts packages/matrix-bridge/scripts/owner.test.ts
 RUN cd packages/matrix-bridge && bun -e 'const m=await import("matrix-appservice-bridge");console.log(typeof m.Bridge)'
 
 FROM manifests AS dependencies

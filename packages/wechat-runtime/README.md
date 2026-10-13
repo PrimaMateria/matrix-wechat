@@ -7,7 +7,7 @@ packages/wechat-runtime/scripts/container.sh build
 packages/wechat-runtime/scripts/container.sh start
 ```
 
-Open http://127.0.0.1:18742/. The service resumes the client's saved account automatically. WeChat may require confirmation on the phone. Without a saved account, the page displays the client's QR code.
+Open http://127.0.0.1:18742/. Login is initiated explicitly through the UI or bridge commands. Set `WECHAT_AUTO_LOGIN=true` to opt into automatic saved-account login attempts. WeChat may require phone confirmation. Without a saved account, the page displays the client's QR code.
 
 The Dockerfile downloads the original vendor AppImage from the repository's [pinned client release](https://github.com/yamada-sexta/matrix-wechat/releases/tag/wechat-client-4.1.13-4526180b), retries transient failures up to three times, checks the SHA-256 from the native ABI profile, and extracts and verifies the executable during build. `WECHAT_APPIMAGE_URL` can override the download mirror while retaining the same hash pin. The expected AppImage hash is `4526180bca980128791599af122ff4795002a5715a510f6a65480e2be6874244`. A changed download fails the build. Both hashes are checked again before startup. The client installation is read-only to the runtime user; the image contains no account data.
 

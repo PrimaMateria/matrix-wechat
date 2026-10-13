@@ -18,6 +18,7 @@ services:
       TZ: UTC
       WECHAT_API_TOKEN: ${WECHAT_API_TOKEN:?Set WECHAT_API_TOKEN in .env}
       WECHAT_WEB_UI: ${WECHAT_WEB_UI:-true}
+      WECHAT_AUTO_LOGIN: "false"
   bridge:
     image: ghcr.io/yamada-sexta/matrix-wechat:master
     build:

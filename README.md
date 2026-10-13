@@ -36,7 +36,9 @@ docker compose up -d
 
 Open http://127.0.0.1:18742/ for WeChat login and chat inspection. Compose publishes the web UI and appservice on localhost; API port `18743` stays on the container network. To disable the web UI, put `WECHAT_WEB_UI=false` in `.env` and recreate the runtime container. The default is enabled. Disabling the UI does not disable the authenticated API or Matrix login commands.
 
-The bridge invites its configured owner to a management room. Saved-account login resumes automatically; WeChat may require approval on the phone. With no saved account, the web UI and management room show the native QR code. The optional host-side ADB watcher can approve the desktop-login prompt:
+To automatically accept Matrix invitations to the management and portal rooms, set `MATRIX_OWNER_AS_TOKEN` in the bridge container only. Use an existing double-puppeting appservice token whose registered user namespace includes `bridge.owner`. The bridge verifies that it can act as that owner, accepts pending invitations to its own rooms, and preserves voluntary departures. Without this token, the owner accepts invitations manually. Keep this credential out of source control and out of the runtime container.
+
+The bridge invites its configured owner to a management room. Login is command based: send `login qr` for one QR image, or `login prompt` to request phone approval for a saved account. Polling does not post QR images or connection notices. Use `status` to check progress. The optional host-side ADB watcher can approve the desktop-login prompt:
 
 ```sh
 bun packages/wechat-runtime/scripts/adb-login.ts --watch
@@ -63,7 +65,7 @@ Sticker/voice/location sending, native mention construction, native revocation, 
 Only `bridge.owner` can issue commands. Send them in the management room, or prefix them with `!wechat` in a portal:
 
 - `help`, `status`, `capabilities`
-- `login saved`, `login qr`
+- `login qr`, `login prompt` (`login saved` is an alias; bare `login` requests phone approval)
 - `list contacts`, `list groups`
 - `start-chat <cached contact or conversation ID>`
 - `sync`

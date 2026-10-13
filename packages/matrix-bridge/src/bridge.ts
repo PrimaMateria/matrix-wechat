@@ -81,6 +81,9 @@ export class WeChatBridge {
         true,
       ));
     this.store.setMeta("management", this.management);
+    await this.matrix.joinOwner(this.management);
+    for (const portal of this.store.all<{ room: string }>("SELECT room FROM portals"))
+      await this.matrix.joinOwner(portal.room);
     await this.tick();
     this.timer = setInterval(() => void this.tick(), 5000);
   }
@@ -121,43 +124,35 @@ export class WeChatBridge {
       this.groups.clear();
       this.joined.clear();
     }
-    const state = this.connection.state;
-    if (this.store.meta("connection_state") !== state) {
-      const generation = Number(this.store.meta("connection_generation") || "0") + 1;
-      await this.notice(
-        this.management,
-        `WeChat: ${state.replaceAll("_", " ")}.`,
-        `connection:${generation}:${state}`,
-      );
-      this.store.setMeta("connection_generation", String(generation));
-      this.store.setMeta("connection_state", state);
+  }
+  private async loginQR(event: MatrixEvent) {
+    for (let attempt = 0; attempt < 20; attempt++) {
+      const snapshot = await this.runtime.rpc.status.query();
+      if (snapshot.status.state === "logged_in") return false;
+      if (snapshot.qrAvailable) {
+        const qr = await this.runtime.asset("qr");
+        const mxc = await this.matrix.upload({
+          bytes: qr.bytes,
+          type: "image/png",
+          name: "wechat-login.png",
+        });
+        await this.matrix.send(
+          this.matrix.bot,
+          event.room_id,
+          "m.room.message",
+          {
+            msgtype: "m.image",
+            body: "Scan with WeChat, then approve on your phone",
+            url: mxc,
+            info: { mimetype: "image/png", size: qr.bytes.length },
+          },
+          hash(`login-qr:${event.event_id}`),
+        );
+        return true;
+      }
+      await Bun.sleep(500);
     }
-    if (
-      state === "awaiting_scan" &&
-      (await this.usable(this.management)) &&
-      snapshot.qrAvailable &&
-      snapshot.qrAt > Number(this.store.meta("qr_at") || "0")
-    ) {
-      const qr = await this.runtime.asset("qr");
-      const mxc = await this.matrix.upload({
-        bytes: qr.bytes,
-        type: "image/png",
-        name: "wechat-login.png",
-      });
-      await this.matrix.send(
-        this.matrix.bot,
-        this.management,
-        "m.room.message",
-        {
-          msgtype: "m.image",
-          body: "Scan with WeChat, then approve on your phone",
-          url: mxc,
-          info: { mimetype: "image/png", size: qr.bytes.length },
-        },
-        hash(`qr:${snapshot.qrAt}`),
-      );
-      this.store.setMeta("qr_at", String(snapshot.qrAt));
-    }
+    throw new Error("QR code is not ready. Try login qr again.");
   }
   private async assetUpload(bytes: Buffer, type: string, name?: string) {
     const key = hash(`${this.account}:${type}:${name || ""}:${hash(bytes)}`);
@@ -216,7 +211,10 @@ export class WeChatBridge {
   }
   async ensurePortal(chat: string, name?: string) {
     const existing = this.store.portal(this.account, chat);
-    if (existing) return existing;
+    if (existing) {
+      await this.matrix.joinOwner(existing.room);
+      return existing;
+    }
     const room = await this.matrix.createRoom(
       JSON.stringify([this.account, chat]),
       name || this.groups.get(chat)?.name || this.contacts.get(chat)?.name || chat,
@@ -522,15 +520,25 @@ export class WeChatBridge {
     let response = "";
     if (command === "help")
       response =
-        "Commands: help, login [saved|qr], status, capabilities, list contacts, list groups, start-chat <WeChat ID>, sync. Native mentions are received; outgoing text does not construct native mentions. Leaving a Matrix room does not leave the WeChat group.";
+        "Commands: help, login [qr|prompt|saved], status, capabilities, list contacts, list groups, start-chat <WeChat ID>, sync. Native mentions are received; outgoing text does not construct native mentions. Leaving a Matrix room does not leave the WeChat group.";
     else if (command === "status")
       response = `WeChat: ${this.connection.state}. Rooms: ${this.store.portals(this.account).length}. History imports pending: ${this.store.portals(this.account).filter((p) => !p.imported).length}.${this.lastError ? ` Last reconciliation error: ${this.lastError}.` : ""}`;
     else if (command === "capabilities") response = JSON.stringify(capabilities, null, 2);
     else if (command === "login") {
-      const mode = args[0] || "saved";
-      if (!["saved", "qr"].includes(mode)) throw new Error("Use login saved or login qr");
-      await this.runtime.rpc.login.mutate({ mode: mode as "saved" | "qr" });
-      response = "Login requested. Scan the QR if shown and approve on your phone.";
+      const requested = args[0] || "prompt";
+      if (!["saved", "prompt", "qr"].includes(requested))
+        throw new Error("Use login qr or login prompt");
+      const snapshot = await this.runtime.rpc.status.query();
+      if (snapshot.status.state === "logged_in") response = "WeChat is already logged in.";
+      else {
+        const mode = requested === "qr" ? "qr" : "saved";
+        await this.runtime.rpc.login.mutate({ mode });
+        if (mode === "qr" && (await this.loginQR(event))) return;
+        response =
+          mode === "qr"
+            ? "WeChat is already logged in."
+            : "Phone confirmation requested. Approve the login in WeChat on your phone.";
+      }
     } else if (command === "list" && args[0] === "contacts")
       response =
         (await this.contactsList()).map((c) => `${c.id}: ${c.name}`).join("\n") ||

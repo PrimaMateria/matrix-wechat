@@ -15,7 +15,7 @@
   "scripts": {
     "start": "bun packages/matrix-bridge/src/main.ts",
     "check": "bun run --cwd packages/wechat-rpc check && bun run --cwd packages/wechat-runtime check && bun run --cwd packages/matrix-bridge check",
-    "test": "bun test packages/wechat-runtime/tests",
+    "test": "bun test packages/wechat-runtime/tests packages/matrix-bridge/scripts",
     "build": "bun run --cwd packages/wechat-runtime build",
     "lint": "bun run --cwd packages/wechat-rpc lint && bun run --cwd packages/wechat-runtime lint && bun run --cwd packages/matrix-bridge lint",
     "test:matrix": "bun packages/matrix-bridge/scripts/e2e.ts"

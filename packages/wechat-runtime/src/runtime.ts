@@ -485,6 +485,7 @@ export class Runtime {
             }
             this.baseline = false;
             if (
+              process.env.WECHAT_AUTO_LOGIN === "true" &&
               !this.loginRequested &&
               state.login?.can_resume &&
               (state.login.phase === 5 || (state.login.phase === 4 && state.login.request === 2))
@@ -536,9 +537,9 @@ export class Runtime {
           throw new APIError("not_ready", "Please wait a few seconds before trying again");
         const { mode } = validateParams(loginRequestSchema, params);
         this.lastLoginRetry = Date.now();
-        let result = await this.native("login", mode);
+        const result = await this.native("login", mode);
         if (!result.queued && result.reason === "qr_required")
-          result = await this.native("login", "qr");
+          throw new APIError("not_ready", "No saved account is available. Use login qr.");
         if (!result.queued) throw new APIError("not_ready", "WeChat login is not ready yet");
         this.loginRequested = true;
         this.qr = undefined;
