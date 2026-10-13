@@ -150,6 +150,16 @@ export class Storage {
           if (g && m) g.members!.push(m);
         }
     }
+    for (const group of groups.values()) {
+      if (!group.name)
+        group.name =
+          group.members
+            ?.filter((member) => member.id !== this.account())
+            .map((member) => member.name)
+            .filter(Boolean)
+            .slice(0, 3)
+            .join(", ") || "Group chat";
+    }
     return { groups: [...groups.values()] };
   }
   async conversations() {
@@ -159,11 +169,19 @@ export class Storage {
       if (basename(d.path) !== "session.db") continue;
       const tables = await this.tables(d);
       if (!tables.has("SessionTable")) continue;
+      const titles = new Map<string, string>();
+      if (tables.has("SessionNoContactInfoTable"))
+        for (const row of await this.query(
+          d,
+          "SELECT username,session_title FROM SessionNoContactInfoTable",
+        ))
+          if (row.session_title) titles.set(row.username, row.session_title);
       recognized = true;
       for (const r of await this.query(d, "SELECT * FROM SessionTable"))
         if (r.username && !num(r.is_hidden))
           conversations.push({
             id: r.username,
+            name: titles.get(r.username),
             chat_type: r.username.endsWith("@chatroom") ? ("group" as const) : ("direct" as const),
             unread_count: num(r.unread_count),
             last_timestamp: num(r.sort_timestamp || r.last_timestamp),

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, createReadStream, existsSync, openSync, readSync } from "node:fs";
-import { appendFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { appendFile, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { dirname, join, resolve } from "node:path";
 import {
   BarcodeFormat,
   BinaryBitmap,
@@ -71,22 +71,7 @@ export class Runtime {
   private subscribers = new Set<(e: Event) => void>();
   private sendReady = false;
   verified = new Set<string>();
-  private uploads = new Map<
-    string,
-    { bytes: Buffer; type: string; account: string; expires: number }
-  >();
-
-  uploaded(token: string) {
-    const asset = this.uploads.get(token);
-    if (
-      !asset ||
-      asset.expires < Date.now() ||
-      asset.account !== this.account ||
-      this.status.state !== "logged_in"
-    )
-      throw new APIError("not_found", "Upload is unavailable");
-    return asset;
-  }
+  private uploads = new Map<string, { path: string; cachedPath: string; size: number }>();
 
   async sendImage(chat: string, bytes: Buffer) {
     const type = imageType(bytes);
@@ -103,24 +88,43 @@ export class Runtime {
         throw new APIError("not_ready", "WeChat is still initializing");
       if (
         this.uploads.size >= 8 ||
-        [...this.uploads.values()].reduce((size, asset) => size + asset.bytes.length, 0) +
-          bytes.length >
+        [...this.uploads.values()].reduce((size, asset) => size + asset.size, 0) + bytes.length >
           64 * 1024 * 1024
       )
         throw new APIError("not_ready", "Too many uploads; try again shortly");
       const token = randomUUID();
-      this.uploads.set(token, {
-        bytes,
-        type: type!,
-        account: this.account,
-        expires: Date.now() + 120000,
-      });
-      setTimeout(() => this.uploads.delete(token), 120000).unref();
-      const response = await this.native(
-        "sendimage",
-        chat,
-        "http://127.0.0.1:18742/native-upload/" + token,
+      const directory = join(data, "uploads"),
+        path = join(directory, token + (type === "image/png" ? ".png" : ".jpg"));
+      const database = (await this.store.databases()).find(
+        (db) => db.path.includes("/" + this.account + "_") && db.path.includes("/db_storage/"),
       );
+      if (!database) throw new APIError("not_ready", "Account media storage is still opening");
+      const accountRoot = resolve(dirname(database.path), "../..");
+      const cachedDirectory = join(
+        accountRoot,
+        "cache",
+        new Date().toISOString().slice(0, 7),
+        "HttpResource",
+      );
+      const cachedPath = join(cachedDirectory, createHash("md5").update(path).digest("hex"));
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      await writeFile(path, bytes, { mode: 0o600, flag: "wx" });
+      await mkdir(cachedDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(cachedPath, bytes, { mode: 0o600, flag: "wx" });
+      this.uploads.set(token, {
+        path,
+        cachedPath,
+        size: bytes.length,
+      });
+      const cleanup = async () => {
+        this.uploads.delete(token);
+        await Promise.all([unlink(path).catch(() => {}), unlink(cachedPath).catch(() => {})]);
+      };
+      const timer = setTimeout(() => void cleanup(), 120000);
+      timer.unref();
+      const response = await this.native("sendimage", chat, path);
+      clearTimeout(timer);
+      await cleanup();
       if (response.success !== true)
         throw new APIError("send_failed", response.error_message || "WeChat rejected the image");
       this.dirty = true;
@@ -483,6 +487,10 @@ export class Runtime {
   async close() {
     if (this.stopped) return;
     this.stopped = true;
+    for (const upload of this.uploads.values()) {
+      await unlink(upload.path).catch(() => {});
+      await unlink(upload.cachedPath).catch(() => {});
+    }
     this.uploads.clear();
     this.qr = undefined;
     try {

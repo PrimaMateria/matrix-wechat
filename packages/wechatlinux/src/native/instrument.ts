@@ -493,6 +493,15 @@ function readStdString(p) {
   if (n > 2097152) throw Error("Native result exceeds limit");
   return (long ? p.add(16).readPointer() : p.add(1)).readUtf8String(n) || "";
 }
+const imageSources = new Map();
+// The JSON route accepts an HTTP prefix, but its core sender requires a local filename.
+// Substitute only our retained, API-owned source on the native worker thread.
+Interceptor.attach(base.add(0x82e7ee0), {
+  onEnter(args) {
+    const source = imageSources.get(readStdString(args[3]));
+    if (source) args[3] = source.object;
+  },
+});
 function exactJSON(s) {
   return JSON.parse(s.replace(/("(?:message_id|server_id|create_time)"\s*:\s*)(-?\d+)/g, '$1"$2"'));
 }
@@ -599,15 +608,20 @@ function outboundCall(payload, queued = false) {
 }
 
 rpc.exports = {
-  sendimage(chat, url) {
+  sendimage(chat, path) {
     if (
       typeof chat !== "string" ||
       !chat ||
-      typeof url !== "string" ||
-      !/^http:\/\/127\.0\.0\.1:18742\/native-upload\/[a-f0-9-]{36}$/.test(url)
+      typeof path !== "string" ||
+      !/^\/home\/wechat\/\.cache\/wechatlinux\/uploads\/[a-f0-9-]{36}\.(png|jpg)$/.test(path)
     )
       throw Error("Invalid image upload");
-    return outboundCall(JSON.stringify({ chat_id: chat, message_type: 3, content_xml: url }), true);
+    const marker = "http://127.0.0.1:18742/native-upload/" + path.split("/").pop();
+    imageSources.set(marker, stdString(path));
+    return outboundCall(
+      JSON.stringify({ chat_id: chat, message_type: 3, content_xml: marker }),
+      true,
+    ).finally(() => imageSources.delete(marker));
   },
   sendprobe() {
     return outboundCall("{}");

@@ -26,6 +26,7 @@ export interface Group extends Contact {
 }
 export interface Conversation {
   id: string;
+  name?: string;
   chat_type: "direct" | "group";
   unread_count: number;
   last_timestamp: number;

@@ -5,7 +5,6 @@ import { Runtime } from "./runtime";
 import { APIError, type Event, publicFields, type Row, type Status } from "./types";
 export interface Backend {
   sendImage?(chat: string, bytes: Buffer): Promise<unknown>;
-  uploaded?(token: string): { bytes: Buffer; type: string };
   avatar?(id: string): Promise<{ bytes: Buffer; type: string }>;
   media?(chat: string, id: string): Promise<{ bytes: Buffer; type: string; name?: string }>;
   status: Status;
@@ -41,13 +40,6 @@ export function createHandler(backend: Backend, webRoot = join(import.meta.dir, 
     if (!["127.0.0.1", "localhost", "[::1]"].includes(hostname))
       return json({ error: { code: "invalid_host", message: "Use localhost" } }, 403);
     try {
-      if (request.method === "GET" && url.pathname.startsWith("/native-upload/")) {
-        if (!backend.uploaded) throw new APIError("not_found", "Upload is unavailable");
-        const asset = backend.uploaded(url.pathname.slice("/native-upload/".length));
-        return new Response(new Uint8Array(asset.bytes), {
-          headers: { ...headers, "Content-Type": asset.type },
-        });
-      }
       if (request.method === "POST" && url.pathname === "/api/send-image") {
         const origin = request.headers.get("Origin");
         if (origin && new URL(origin).host !== host)

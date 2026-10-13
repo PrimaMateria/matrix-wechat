@@ -60,6 +60,7 @@ function App() {
   chat.current = selected;
   const name = (id: string) =>
     contacts.get(id)?.name ||
+    chats.find((chat) => chat.id === id)?.name ||
     groups.get(id)?.name ||
     (id === "filehelper" ? "File Transfer" : id || "Unknown sender");
   function report(e: unknown) {
