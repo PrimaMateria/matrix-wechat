@@ -1,6 +1,9 @@
 FROM docker.io/oven/bun:1.3.14 AS client
-# The vendor's mutable download URL must still match the reverse-engineered build.
-ADD --checksum=sha256:4526180bca980128791599af122ff4795002a5715a510f6a65480e2be6874244 https://dldir1v6.qq.com/weixin/Universal/Linux/WeChatLinux_x86_64.AppImage /opt/wechat-client/WeChatLinux_x86_64.AppImage
+# Download the validated release asset with retries; the native profile owns the hash pin.
+ARG WECHAT_APPIMAGE_URL=https://github.com/yamada-sexta/matrix-wechat/releases/download/wechat-client-4.1.13-4526180b/WeChatLinux_x86_64.AppImage
+COPY packages/wechatlinux/scripts/download-client.ts /tmp/download-client.ts
+COPY packages/wechatlinux/src/native/storage_profile.toml /tmp/storage_profile.toml
+RUN bun /tmp/download-client.ts "$WECHAT_APPIMAGE_URL" /opt/wechat-client/WeChatLinux_x86_64.AppImage /tmp/storage_profile.toml
 
 FROM docker.io/oven/bun:1.3.14 AS build
 WORKDIR /opt/matrix-wechat

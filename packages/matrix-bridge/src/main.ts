@@ -112,15 +112,13 @@ export async function main(args = Bun.argv.slice(2)) {
   process.on("SIGINT", () => void close());
   try {
     await matrix.start();
-    if (runtime) {
-      web = Bun.serve({
-        hostname: "0.0.0.0",
-        port: 18742,
-        idleTimeout: 0,
-        fetch: createHandler(runtime),
-      });
-      closePrivate = await privateAPI(runtime);
-    }
+    web = Bun.serve({
+      hostname: "0.0.0.0",
+      port: 18742,
+      idleTimeout: 0,
+      fetch: createHandler(runtime),
+    });
+    closePrivate = await privateAPI(runtime);
     await runtime.start();
     await engine.start();
     console.log("Matrix–WeChat bridge ready. Management room invites go to the configured owner.");

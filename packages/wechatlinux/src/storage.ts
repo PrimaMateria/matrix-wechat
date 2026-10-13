@@ -322,54 +322,31 @@ export class Storage {
     return [key, m];
   }
   private async messages(chatFilter?: string) {
-    const out = new Map<string, Message>(),
-      paths = new Set<string>();
-    let foundDB = false;
-    for (const d of await this.databases()) {
-      if (!/^message_\d+\.db$/.test(basename(d.path))) continue;
-      foundDB = true;
-      paths.add(d.path);
-      const tables = await this.tables(d),
-        names = new Map<string, string>();
-      if (tables.has("Name2Id"))
-        for (const r of await this.query(d, "SELECT rowid AS __id,* FROM Name2Id"))
-          names.set(String(r.__id), r.user_name);
-      const chats = new Map([...names.values()].map((n) => ["msg_" + md5(n), n]));
-      for (const [t, c] of tables) {
-        if (!t.toLowerCase().startsWith("msg_")) continue;
-        if (chatFilter && t.toLowerCase() !== "msg_" + md5(chatFilter)) continue;
-        if (
-          !["local_id", "real_sender_id", "create_time", "local_type", "message_content"].every(
-            (k) => c.includes(k),
-          )
-        )
-          throw new APIError("unsupported_schema", "Unsupported message schema");
-        const chat = chats.get(t.toLowerCase());
-        if (!chat) throw new APIError("not_ready", "Conversation mapping is still opening");
-        let projection = "*";
-        if (c.includes("WCDB_CT_message_content"))
-          projection += ",wcdb_decompress(message_content,WCDB_CT_message_content) AS __decoded";
-        if (c.includes("WCDB_CT_source"))
-          projection += ",wcdb_decompress(source,WCDB_CT_source) AS __source";
-        let after = "0";
-        while (true) {
-          const page = await this.query(
-            d,
-            `SELECT ${projection},CAST(local_id AS TEXT) AS __scan_local FROM ${identifier(t)} WHERE local_id>${literal(after)} ORDER BY local_id ASC LIMIT 500`,
-            500,
+    const { sources, paths } = await this.messageSources(chatFilter);
+    const messages = new Map<string, Message>();
+    for (const source of sources) {
+      let after = "0";
+      while (true) {
+        const page = await this.query(
+          source.db,
+          `SELECT ${source.projection} FROM ${identifier(source.table)} WHERE local_id>${literal(after)} ORDER BY local_id ASC LIMIT 500`,
+          500,
+        );
+        for (const row of page) {
+          after = String(row.local_id);
+          const [key, message] = this.normalize(
+            source.db,
+            source.table,
+            row,
+            source.names,
+            source.chat,
           );
-          for (const row of page) {
-            after = String(row.__scan_local);
-            delete row.__scan_local;
-            const [key, message] = this.normalize(d, t, row, names, chat);
-            out.set(key, message);
-          }
-          if (page.length < 500) break;
+          messages.set(key, message);
         }
+        if (page.length < 500) break;
       }
     }
-    if (!foundDB) throw new APIError("not_ready", "Message history is still opening");
-    return { messages: out, paths };
+    return { messages, paths };
   }
   async history(params: Row) {
     const chat = params.chat_id,
@@ -410,9 +387,7 @@ export class Storage {
           : undefined,
     };
   }
-  // Bridge imports use bounded native queries rather than materializing every row.
-  // Cursors retain a keyset for each shard, including rows with identical timestamps.
-  private async bridgeSources(chatFilter?: string) {
+  private async messageSources(chatFilter?: string) {
     const sources: {
       db: Database;
       table: string;
@@ -420,10 +395,10 @@ export class Storage {
       names: Map<string, string>;
       projection: string;
     }[] = [];
-    let found = false;
+    const paths = new Set<string>();
     for (const db of await this.databases()) {
       if (!/^message_\d+\.db$/.test(basename(db.path))) continue;
-      found = true;
+      paths.add(db.path);
       const tables = await this.tables(db),
         names = new Map<string, string>();
       if (tables.has("Name2Id"))
@@ -444,7 +419,7 @@ export class Storage {
           throw new APIError("unsupported_schema", "Unsupported message schema");
         const chat = chats.get(table.toLowerCase());
         if (!chat) throw new APIError("not_ready", "Conversation mapping is still opening");
-        let projection = "*,CAST(local_id AS TEXT) AS __bridge_local";
+        let projection = "*";
         if (columns.includes("WCDB_CT_message_content"))
           projection += ",wcdb_decompress(message_content,WCDB_CT_message_content) AS __decoded";
         if (columns.includes("WCDB_CT_source"))
@@ -452,23 +427,22 @@ export class Storage {
         sources.push({ db, table, chat, names, projection });
       }
     }
-    if (!found) throw new APIError("not_ready", "Message history is still opening");
-    return sources;
+    if (!paths.size) throw new APIError("not_ready", "Message history is still opening");
+    return { sources, paths };
   }
   async bridgeChats() {
-    return [...new Set((await this.bridgeSources()).map((source) => source.chat))];
+    return [...new Set((await this.messageSources()).sources.map((source) => source.chat))];
   }
   async bridgeRecent(chat: string, limit = 50) {
     if (!chat || chat.length > 256 || !Number.isInteger(limit) || limit < 1 || limit > 500)
       throw new APIError("invalid_params", "Invalid recent history request");
     const rows: Message[] = [];
-    for (const source of await this.bridgeSources(chat)) {
+    for (const source of (await this.messageSources(chat)).sources) {
       for (const row of await this.query(
         source.db,
         `SELECT ${source.projection} FROM ${identifier(source.table)} ORDER BY create_time DESC,local_id DESC LIMIT ${limit}`,
         limit,
       )) {
-        delete row.__bridge_local;
         rows.push(this.normalize(source.db, source.table, row, source.names, chat)[1]);
       }
     }
@@ -508,7 +482,7 @@ export class Storage {
       }
     }
     const candidates: { key: string; local: string; message: Message }[] = [];
-    for (const source of await this.bridgeSources(chat)) {
+    for (const source of (await this.messageSources(chat)).sources) {
       const key = JSON.stringify([source.db.path, source.table]),
         after = positions[key];
       const where = after
@@ -519,8 +493,7 @@ export class Storage {
         `SELECT ${source.projection} FROM ${identifier(source.table)}${where} ORDER BY create_time ASC,local_id ASC LIMIT ${limit + 1}`,
         limit + 1,
       )) {
-        const local = String(row.__bridge_local);
-        delete row.__bridge_local;
+        const local = String(row.local_id);
         candidates.push({
           key,
           local,
@@ -569,14 +542,13 @@ export class Storage {
       throw new APIError("invalid_params", "A conversation and message are required");
     let message: Message | undefined;
     if (/^\d+$/.test(id))
-      for (const source of await this.bridgeSources(chat)) {
+      for (const source of (await this.messageSources(chat)).sources) {
         const rows = await this.query(
           source.db,
           `SELECT ${source.projection} FROM ${identifier(source.table)} WHERE server_id=${literal(id)} LIMIT 1`,
           1,
         );
         if (rows[0]) {
-          delete rows[0].__bridge_local;
           message = this.normalize(source.db, source.table, rows[0], source.names, chat)[1];
           break;
         }

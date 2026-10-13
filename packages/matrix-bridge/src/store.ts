@@ -37,7 +37,7 @@ export interface MatrixEvent {
 export interface Inbox {
   id: string;
   payload: string;
-  state: string;
+  state: "queued" | "sending" | "submitted" | "uncertain" | "delivered" | "done" | "failed";
   account: string;
   chat: string;
   fingerprint: string;
@@ -74,10 +74,10 @@ export class Store {
     this.db.run("UPDATE inbox SET state='uncertain' WHERE state='sending'");
   }
   get<T>(sql: string, ...params: (string | number | null)[]): T | null {
-    return this.db.query<T, any[]>(sql).get(...params);
+    return this.db.query<T, (string | number | null)[]>(sql).get(...params);
   }
   all<T>(sql: string, ...params: (string | number | null)[]): T[] {
-    return this.db.query<T, any[]>(sql).all(...params);
+    return this.db.query<T, (string | number | null)[]>(sql).all(...params);
   }
   run(sql: string, ...params: (string | number | null)[]) {
     return this.db.run(sql, params);
@@ -168,8 +168,8 @@ export class Store {
       JSON.stringify(event),
     );
   }
-  inbox(state: string) {
-    return this.all<Inbox>("SELECT * FROM inbox WHERE state=? ORDER BY rowid", state);
+  queued() {
+    return this.all<Inbox>("SELECT * FROM inbox WHERE state='queued' ORDER BY rowid LIMIT 100");
   }
   pending(account: string, chat?: string) {
     return this.all<Inbox>(

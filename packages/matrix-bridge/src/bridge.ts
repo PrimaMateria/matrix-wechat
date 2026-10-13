@@ -3,7 +3,7 @@ import type { Runtime } from "../../wechatlinux/src/runtime";
 import { APIError } from "../../wechatlinux/src/types";
 import type { Config } from "./config";
 import { ghostID, incoming, messageFingerprint, outgoing } from "./convert";
-import type { MatrixTransport } from "./matrix";
+import type { Matrix } from "./matrix";
 import {
   type Asset,
   type Contact,
@@ -29,13 +29,12 @@ export class WeChatBridge {
   private contacts = new Map<string, Contact>();
   private groups = new Map<string, Group>();
   private joined = new Set<string>();
-  private encryption = new Map<string, boolean>();
   private rotation = 0;
   lastError = "";
   constructor(
     readonly config: Config,
     readonly runtime: Runtime,
-    readonly matrix: MatrixTransport,
+    readonly matrix: Matrix,
     readonly store: Store,
     readonly fatal: () => void = () => {},
   ) {}
@@ -56,20 +55,16 @@ export class WeChatBridge {
   }
   accept(event: MatrixEvent) {
     if (!event.event_id || !event.room_id || !event.sender || !event.content) return;
-    if (
-      event.type === "m.room.encryption" &&
-      (this.store.portalForRoom(event.room_id) || event.room_id === this.store.meta("management"))
-    ) {
-      this.encryption.set(event.room_id, true);
+    const knownRoom =
+      Boolean(this.store.portalForRoom(event.room_id)) ||
+      event.room_id === this.store.meta("management");
+    if (event.type === "m.room.encryption" && event.state_key === "" && knownRoom) {
       this.store.setMeta(`encrypted:${event.room_id}`, "true");
       this.store.accept(event);
       return;
     }
     if (event.sender !== this.config.bridge.owner) return;
-    if (
-      !this.store.portalForRoom(event.room_id) &&
-      event.room_id !== this.store.meta("management")
-    ) {
+    if (!knownRoom) {
       if (
         event.type !== "m.room.member" ||
         event.state_key !== this.matrix.bot ||
@@ -126,9 +121,8 @@ export class WeChatBridge {
   }
   async usable(room: string) {
     if (this.store.meta(`encrypted:${room}`)) return false;
-    const encrypted = this.encryption.get(room) || (await this.matrix.encrypted(room));
+    const encrypted = await this.matrix.encrypted(room);
     if (encrypted) {
-      this.encryption.set(room, true);
       this.store.setMeta(`encrypted:${room}`, "true");
       await this.notice(
         room,
@@ -187,14 +181,7 @@ export class WeChatBridge {
   private async ensureGhost(id: string) {
     const mxid = this.ghost(id),
       contact = this.contacts.get(id);
-    let avatar: string | undefined;
-    try {
-      const asset = await this.runtime.avatar(id);
-      avatar = await this.assetUpload(asset.bytes, asset.type);
-    } catch (error) {
-      if (!(error instanceof APIError) || !["not_found", "media_unavailable"].includes(error.code))
-        throw error;
-    }
+    const avatar = await this.avatar(id);
     const name = contact?.name || id;
     const previous = this.store.get<{ profile: string }>(
       "SELECT profile FROM ghosts WHERE account=? AND id=?",
@@ -221,6 +208,15 @@ export class WeChatBridge {
       );
     }
     return mxid;
+  }
+  private async avatar(id: string): Promise<string | undefined> {
+    try {
+      const asset = await this.runtime.avatar(id);
+      return await this.assetUpload(asset.bytes, asset.type);
+    } catch (error) {
+      if (!(error instanceof APIError) || !["not_found", "media_unavailable"].includes(error.code))
+        throw error;
+    }
   }
   private async joinGhost(room: string, id: string) {
     const key = `${room}:${id}`;
@@ -257,17 +253,7 @@ export class WeChatBridge {
         contact?.name ||
         conversations.find((c) => c.id === portal.chat)?.name ||
         portal.chat;
-      let avatar: string | undefined;
-      try {
-        const asset = await this.runtime.avatar(portal.chat);
-        avatar = await this.assetUpload(asset.bytes, asset.type);
-      } catch (error) {
-        if (
-          !(error instanceof APIError) ||
-          !["not_found", "media_unavailable"].includes(error.code)
-        )
-          throw error;
-      }
+      const avatar = await this.avatar(portal.chat);
       const previous = JSON.parse(portal.metadata || "{}");
       const members = [
         ...new Set([
@@ -348,7 +334,7 @@ export class WeChatBridge {
       );
   }
   private async receive(message: Message, portal: Portal) {
-    if (message.account_id !== this.account || !(await this.usable(portal.room))) return false;
+    if (message.account_id !== this.account) return false;
     const fingerprint = messageFingerprint(message);
     const existing = this.store.mapping(
       this.account,
@@ -356,11 +342,17 @@ export class WeChatBridge {
       message.id,
       message.local_key,
     );
-    if (!existing && this.held(message)) return false;
     if (existing?.redacted) return true;
     if (existing && existing.fingerprint === fingerprint && !existing.media_retry) {
       if (existing.id !== message.id)
         this.store.saveMapping(message, existing.event, existing.sender, fingerprint);
+      return true;
+    }
+    if (!(await this.usable(portal.room))) return false;
+    if (!existing && this.held(message)) return false;
+    // An echoed Matrix event belongs to the owner: don't impersonate or reupload it.
+    if (existing?.sender === this.config.bridge.owner) {
+      this.store.saveMapping(message, existing.event, existing.sender, fingerprint);
       return true;
     }
     const sender =
@@ -370,11 +362,6 @@ export class WeChatBridge {
         : await this.joinGhost(portal.room, message.sender_id));
     const converted = await this.content(message);
     if (existing?.fingerprint === fingerprint && converted.missingMedia) return true;
-    // An echoed Matrix event belongs to the owner: don't impersonate them to edit it.
-    if (existing?.sender === this.config.bridge.owner) {
-      this.store.saveMapping(message, existing.event, existing.sender, fingerprint);
-      return true;
-    }
     const originalType = existing ? this.store.meta(`message_type:${existing.event}`) : undefined;
     const edit = existing && originalType !== "m.sticker" && converted.type !== "m.sticker";
     const content = edit
@@ -567,10 +554,8 @@ export class WeChatBridge {
     } else response = "Unknown command. Send help for available commands.";
     await this.notice(event.room_id, response, `command:${event.event_id}`);
   }
-  private async sendJob(job: Inbox) {
-    const event: MatrixEvent = JSON.parse(job.payload);
-    if (event.type === "m.room.encryption") {
-      this.encryption.set(event.room_id, true);
+  private async sendJob(job: Inbox, event: MatrixEvent) {
+    if (event.type === "m.room.encryption" && event.state_key === "") {
       await this.notice(
         event.room_id,
         "Encrypted Matrix rooms are unsupported. Bridging for this room is stopped.",
@@ -697,25 +682,21 @@ export class WeChatBridge {
       this.store.run("UPDATE inbox SET state=? WHERE id=?", safe ? "failed" : "uncertain", job.id);
       throw error;
     }
-    this.store.run("UPDATE inbox SET state='submitted' WHERE id=?", job.id);
     return "submitted";
   }
   private async jobs() {
-    for (const job of this.store.inbox("queued").slice(0, 100)) {
+    for (const job of this.store.queued()) {
+      const event: MatrixEvent = JSON.parse(job.payload);
       try {
-        const state = await this.sendJob(job);
+        const state = await this.sendJob(job, event);
         if (state !== "wait") this.store.run("UPDATE inbox SET state=? WHERE id=?", state, job.id);
       } catch (error) {
-        if (
-          error instanceof APIError &&
-          error.code === "not_ready" &&
-          this.store.get<Inbox>("SELECT * FROM inbox WHERE id=?", job.id)?.state === "queued"
-        )
-          continue;
         const current = this.store.get<Inbox>("SELECT * FROM inbox WHERE id=?", job.id)!;
+        if (error instanceof APIError && error.code === "not_ready" && current.state === "queued")
+          continue;
         const uncertain = current.state === "uncertain";
         await this.notice(
-          JSON.parse(job.payload).room_id,
+          event.room_id,
           uncertain
             ? "WeChat delivery is uncertain. This message will not be resent automatically."
             : `Unable to bridge: ${error instanceof Error ? error.message : "operation failed"}`,

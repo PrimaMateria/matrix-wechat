@@ -61,12 +61,19 @@ export function createHandler(backend: Backend, webRoot = join(import.meta.dir, 
     try {
       if (
         request.method === "POST" &&
-        ["/api/send-image", "/api/send-file"].includes(url.pathname)
+        ["/api/send-image", "/api/send-file", "/api/send", "/api/login/retry"].includes(
+          url.pathname,
+        )
       ) {
-        const isFile = url.pathname === "/api/send-file";
         const origin = request.headers.get("Origin");
         if (origin && new URL(origin).host !== host)
           return json({ error: { code: "invalid_origin", message: "Origin is not allowed" } }, 403);
+      }
+      if (
+        request.method === "POST" &&
+        ["/api/send-image", "/api/send-file"].includes(url.pathname)
+      ) {
+        const isFile = url.pathname === "/api/send-file";
         const contentType = request.headers.get("Content-Type") || "";
         if (!contentType.startsWith("multipart/form-data;"))
           throw new APIError("invalid_params", "A multipart upload is required");
@@ -187,17 +194,6 @@ export function createHandler(backend: Backend, webRoot = join(import.meta.dir, 
         return json(await backend.dispatch(method, params));
       }
       if (request.method === "POST" && ["/api/send", "/api/login/retry"].includes(url.pathname)) {
-        const origin = request.headers.get("Origin");
-        if (origin && new URL(origin).host !== host)
-          return json(
-            {
-              error: {
-                code: "invalid_origin",
-                message: "Origin is not allowed",
-              },
-            },
-            403,
-          );
         if (request.headers.get("Content-Type")?.split(";")[0] !== "application/json")
           return json({ error: { code: "invalid_params", message: "JSON is required" } }, 415);
         const body = await readBody(request, 131072, "Message is too large");

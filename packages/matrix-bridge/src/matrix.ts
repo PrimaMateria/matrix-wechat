@@ -4,26 +4,7 @@ import type { Config } from "./config";
 import type { Asset } from "./messages";
 import { hash, type MatrixEvent } from "./store";
 
-export interface MatrixTransport {
-  bot: string;
-  createRoom(key: string, name: string, owner: string, direct: boolean): Promise<string>;
-  profile(mxid: string, name: string, avatar?: string): Promise<void>;
-  membership(room: string, mxid: string, join: boolean): Promise<void>;
-  metadata(room: string, name: string, topic: string, avatar?: string): Promise<void>;
-  send(
-    sender: string,
-    room: string,
-    type: string,
-    content: Record<string, any>,
-    transaction: string,
-    timestamp?: number,
-  ): Promise<string>;
-  redact(room: string, event: string, transaction: string): Promise<void>;
-  upload(asset: Asset): Promise<string>;
-  download(url: string, limit: number): Promise<Asset>;
-  encrypted(room: string): Promise<boolean>;
-}
-export class Matrix implements MatrixTransport {
+export class Matrix {
   readonly sdk: Bridge;
   readonly bot: string;
   constructor(

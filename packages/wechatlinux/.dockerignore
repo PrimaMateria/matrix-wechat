@@ -21,3 +21,4 @@ captures
 README.md
 scripts/*
 !scripts/adb-login.ts
+!scripts/download-client.ts

@@ -4,6 +4,9 @@ import type { Contact, Conversation, Event, Group, Message, Status } from "../ty
 import "./app.css";
 import { Avatar } from "./avatar";
 
+const mediaURL = (message: Message) =>
+  "/api/media?" + new URLSearchParams({ chat_id: message.chat_id, message_id: message.id });
+
 async function api<T>(
   method: string,
   params: Record<string, unknown> = {},
@@ -235,19 +238,13 @@ function App() {
       setLoginBusy(false);
     }
   }
-  async function send() {
-    if (sendLock.current || !draft.trim() || !selected) return;
+  async function submitMessage(action: () => Promise<void>) {
+    if (sendLock.current || !selected) return;
     sendLock.current = true;
-    const text = draft,
-      id = selected;
     setSending(true);
     setError("");
     try {
-      await api("send", { chat_id: id, kind: "text", text, reply_to: reply?.id }, true);
-      if (chat.current === id) {
-        setDraft("");
-        setReply(undefined);
-      }
+      await action();
       await history();
       await conversations();
     } catch (e) {
@@ -257,31 +254,33 @@ function App() {
       setSending(false);
     }
   }
+  async function send() {
+    if (!draft.trim()) return;
+    const text = draft,
+      id = selected;
+    await submitMessage(async () => {
+      await api("send", { chat_id: id, kind: "text", text, reply_to: reply?.id }, true);
+      if (chat.current === id) {
+        setDraft("");
+        setReply(undefined);
+      }
+    });
+  }
   const imageInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   async function sendAttachment(file: File, kind: "image" | "file") {
-    if (sendLock.current || !selected) return;
-    sendLock.current = true;
-    setSending(true);
-    setError("");
-    try {
+    await submitMessage(async () => {
       const form = new FormData();
       form.set("chat_id", selected);
       form.set(kind, file);
       const response = await fetch(`/api/send-${kind}`, { method: "POST", body: form });
       const result = await response.json();
       if (!response.ok) throw Error(result.error?.message || "Attachment could not be sent");
-      await history();
-      await conversations();
-    } catch (error) {
-      report(error);
-    } finally {
-      sendLock.current = false;
-      setSending(false);
-    }
+    });
   }
   const group = groups.get(selected),
-    ordered = [...messages].sort((a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id));
+    ordered = [...messages].sort((a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id)),
+    byID = new Map(messages.map((message) => [message.id, message]));
   return (
     <>
       <header>
@@ -415,64 +414,30 @@ function App() {
                     <blockquote>
                       <strong>
                         {m.quote?.sender_name ||
-                          name(
-                            m.quote?.sender_id ||
-                              ordered.find((other) => other.id === m.reply_to)?.sender_id ||
-                              "",
-                          )}
+                          name(m.quote?.sender_id || byID.get(m.reply_to)?.sender_id || "")}
                       </strong>
-                      <div>
-                        {m.quote?.text ||
-                          ordered.find((other) => other.id === m.reply_to)?.text ||
-                          "Quoted message"}
-                      </div>
+                      <div>{m.quote?.text || byID.get(m.reply_to)?.text || "Quoted message"}</div>
                     </blockquote>
                   )}
                   <div>
                     {m.kind === "sticker" || m.kind === "image" ? (
                       <img
                         className={m.kind === "image" ? "attachmentImage" : "sticker"}
-                        src={
-                          "/api/media?" +
-                          new URLSearchParams({
-                            chat_id: m.chat_id,
-                            message_id: m.id,
-                          })
-                        }
+                        src={mediaURL(m)}
                         alt={m.kind === "image" ? "Image attachment" : "Sticker"}
                       />
                     ) : m.kind === "audio" ? (
-                      <audio
-                        controls
-                        preload="none"
-                        aria-label="Voice message"
-                        src={
-                          "/api/media?" +
-                          new URLSearchParams({
-                            chat_id: m.chat_id,
-                            message_id: m.id,
-                          })
-                        }
-                      />
+                      <audio controls preload="none" aria-label="Voice message" src={mediaURL(m)} />
                     ) : m.kind === "video" ? (
                       <video
                         className="attachmentVideo"
                         controls
                         preload="metadata"
                         aria-label="Video message"
-                        src={
-                          "/api/media?" +
-                          new URLSearchParams({ chat_id: m.chat_id, message_id: m.id })
-                        }
+                        src={mediaURL(m)}
                       />
                     ) : m.kind === "file" ? (
-                      <a
-                        download
-                        href={
-                          "/api/media?" +
-                          new URLSearchParams({ chat_id: m.chat_id, message_id: m.id })
-                        }
-                      >
+                      <a download href={mediaURL(m)}>
                         {m.media?.name || "Download file"}
                       </a>
                     ) : m.link ? (

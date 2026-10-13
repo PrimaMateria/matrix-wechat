@@ -81,7 +81,6 @@ export class Runtime {
   private baseline = false;
   private loginRequested = false;
   private lastQR = 0;
-  private tickBusy = false;
   private lastLoginRetry = 0;
   private serial: Promise<any> = Promise.resolve();
   private subscribers = new Set<(e: Event) => void>();
@@ -424,92 +423,87 @@ export class Runtime {
   }
   private async monitor() {
     while (!this.stopped) {
-      if (!this.tickBusy) {
-        this.tickBusy = true;
-        try {
-          await this.operation(async () => {
-            const state = await this.native("status"),
-              dbs: Database[] = await this.native("databases");
-            const accounts = new Set(
-              dbs
-                .filter((d) => d.readable)
-                .map((d) =>
-                  d.path
-                    .match(/\/xwechat_files\/([^/]+)\/db_storage\//)?.[1]
-                    ?.replace(/_[0-9a-f]{4}$/, ""),
-                )
-                .filter(Boolean),
-            );
-            this.account = accounts.size === 1 ? [...accounts][0]! : "";
-            if (this.account && !state.login_view_active) {
-              this.updateStatus({
-                state: "logged_in",
-                account: { id: this.account },
-              });
-              this.qr = undefined;
-              if (this.dirty || !this.baseline) {
-                this.dirty = false;
-                try {
-                  const changes = await this.store.changes();
-                  this.baseline = true;
-                  for (const event of changes) {
-                    this.emit(event);
-                    if (event.message) this.verified.add("receive." + event.message.kind);
-                  }
-                } catch (e) {
-                  this.dirty = true;
-                  if (!(e instanceof APIError) || !["not_ready"].includes(e.code))
-                    console.error(
-                      "Message reconciliation:",
-                      e instanceof APIError ? e.code : "failed",
-                    );
+      try {
+        await this.operation(async () => {
+          const state = await this.native("status"),
+            dbs: Database[] = await this.native("databases");
+          const accounts = new Set(
+            dbs
+              .filter((d) => d.readable)
+              .map((d) =>
+                d.path
+                  .match(/\/xwechat_files\/([^/]+)\/db_storage\//)?.[1]
+                  ?.replace(/_[0-9a-f]{4}$/, ""),
+              )
+              .filter(Boolean),
+          );
+          this.account = accounts.size === 1 ? [...accounts][0]! : "";
+          if (this.account && !state.login_view_active) {
+            this.updateStatus({
+              state: "logged_in",
+              account: { id: this.account },
+            });
+            this.qr = undefined;
+            if (this.dirty || !this.baseline) {
+              this.dirty = false;
+              try {
+                const changes = await this.store.changes();
+                this.baseline = true;
+                for (const event of changes) {
+                  this.emit(event);
+                  if (event.message) this.verified.add("receive." + event.message.kind);
                 }
-              }
-              if (!this.sendReady) {
-                const probe = await this.native("sendprobe");
-                if (probe.success !== false)
-                  throw new APIError(
-                    "probe_failed",
-                    "Native send probe did not reject invalid parameters",
+              } catch (e) {
+                this.dirty = true;
+                if (!(e instanceof APIError) || !["not_ready"].includes(e.code))
+                  console.error(
+                    "Message reconciliation:",
+                    e instanceof APIError ? e.code : "failed",
                   );
-                this.sendReady = true;
-                console.log("Native send callback ABI validated");
-              }
-            } else {
-              if (this.status.state === "logged_in") {
-                this.loginRequested = false;
-                this.sendReady = false;
-              }
-              this.baseline = false;
-              if (
-                !this.loginRequested &&
-                state.login?.can_resume &&
-                (state.login.phase === 5 || (state.login.phase === 4 && state.login.request === 2))
-              ) {
-                const result = await this.native("login", "saved");
-                this.loginRequested = result.queued === true;
-              }
-              this.updateStatus({
-                state:
-                  !state.login?.active || (state.login?.phase === 4 && state.login?.request === 6)
-                    ? "signing_in"
-                    : [3, 4].includes(state.login?.phase)
-                      ? "awaiting_confirmation"
-                      : "awaiting_scan",
-              });
-              if (state.login?.phase === 0 && Date.now() - this.lastQR > 4000) {
-                this.lastQR = Date.now();
-                await this.refreshQR();
               }
             }
-          });
-        } catch (e) {
-          if (e instanceof APIError && e.code === "disconnected")
-            this.updateStatus({ state: "disconnected" });
-          else console.error("Client initialization:", e instanceof APIError ? e.code : "failed");
-        } finally {
-          this.tickBusy = false;
-        }
+            if (!this.sendReady) {
+              const probe = await this.native("sendprobe");
+              if (probe.success !== false)
+                throw new APIError(
+                  "probe_failed",
+                  "Native send probe did not reject invalid parameters",
+                );
+              this.sendReady = true;
+              console.log("Native send callback ABI validated");
+            }
+          } else {
+            if (this.status.state === "logged_in") {
+              this.loginRequested = false;
+              this.sendReady = false;
+            }
+            this.baseline = false;
+            if (
+              !this.loginRequested &&
+              state.login?.can_resume &&
+              (state.login.phase === 5 || (state.login.phase === 4 && state.login.request === 2))
+            ) {
+              const result = await this.native("login", "saved");
+              this.loginRequested = result.queued === true;
+            }
+            this.updateStatus({
+              state:
+                !state.login?.active || (state.login?.phase === 4 && state.login?.request === 6)
+                  ? "signing_in"
+                  : [3, 4].includes(state.login?.phase)
+                    ? "awaiting_confirmation"
+                    : "awaiting_scan",
+            });
+            if (state.login?.phase === 0 && Date.now() - this.lastQR > 4000) {
+              this.lastQR = Date.now();
+              await this.refreshQR();
+            }
+          }
+        });
+      } catch (e) {
+        if (e instanceof APIError && e.code === "disconnected")
+          this.updateStatus({ state: "disconnected" });
+        else console.error("Client initialization:", e instanceof APIError ? e.code : "failed");
       }
       await sleep(1500);
     }
@@ -604,7 +598,7 @@ export class Runtime {
     });
   }
   async media(chat: string, id: string) {
-    const message = await this.operation(async () => {
+    const { message, voice } = await this.operation(async () => {
       if (this.status.state !== "logged_in")
         throw new APIError("not_ready", "WeChat is still signing in");
       const message = await this.store.message(chat, id);
@@ -613,11 +607,11 @@ export class Runtime {
         voice: message.kind === "audio" ? await this.store.voice(message) : undefined,
       };
     });
-    if (message.voice) return voiceAudioProcess(message.voice);
-    if (message.message.kind === "image") return receivedImage(message.message);
-    if (message.message.kind === "file") return receivedFile(message.message);
-    if (message.message.kind === "video") return receivedVideo(message.message);
-    return stickerImage(message.message, join(data, "media"));
+    if (voice) return voiceAudioProcess(voice);
+    if (message.kind === "image") return receivedImage(message);
+    if (message.kind === "file") return receivedFile(message);
+    if (message.kind === "video") return receivedVideo(message);
+    return stickerImage(message, join(data, "media"));
   }
   async close() {
     if (this.stopped) return;
