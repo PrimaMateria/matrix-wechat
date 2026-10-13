@@ -19,4 +19,5 @@ captures
 *.dmp
 .env*
 README.md
-scripts
+scripts/*
+!scripts/adb-login.ts

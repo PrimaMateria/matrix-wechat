@@ -36,3 +36,11 @@ HTTP API: `GET /api/status`, `/api/contacts`, `/api/groups`, `/api/conversations
 Sending requires native callback validation. Its acknowledgement reports the native handler result, not a remote read receipt. Media downloads and additional send types remain unverified. Incoming updates currently use native database write hooks followed by committed-state reconciliation; a direct global message callback remains unverified. API/schema/investigation notes live in entirely ignored `wechat_api/`.
 
 Git ignores account data, local notes, dependencies, build output, QR images, logs, databases, and captures. No personal data belongs in source, fixtures, or the Docker build context.
+
+To approve desktop login requests from an ADB-connected phone, run this on the host while the container runs:
+
+```sh
+bun packages/wechatlinux/scripts/adb-login.ts --watch
+```
+
+The watcher checks the local API for a pending phone confirmation, matches WeChat's desktop login prompt through Android UI automation, and presses its login button. When WeChat hides accessibility controls, it checks the exact desktop-login activity and locates the large green button from an in-memory screenshot. It waits when the phone is locked. Use `ANDROID_SERIAL` when multiple ADB devices are connected. Omit `--watch` for one check; Ctrl+C stops the watcher. UI dumps are temporary files on the phone and are deleted after each check; account and conversation text are not logged.

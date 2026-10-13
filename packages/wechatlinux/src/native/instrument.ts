@@ -345,8 +345,16 @@ function sqlQuery(db, sql, maxRows, allowWrite = false) {
         const type = native.column_type(statement, i);
         if (type === 1) row.push(native.column_int64(statement, i).toString());
         else if (type === 2) row.push(native.column_double(statement, i));
-        else if (type === 3) row.push(text(native.column_text(statement, i)));
-        else if (type === 4) {
+        else if (type === 3) {
+          const p = native.column_text(statement, i),
+            n = native.column_bytes(statement, i);
+          if (n > 8 * 1024 * 1024) throw Error("Text exceeds read limit");
+          try {
+            row.push(n ? p.readUtf8String(n) : "");
+          } catch (_) {
+            row.push({ bytes: Array.from(new Uint8Array(p.readByteArray(n))) });
+          }
+        } else if (type === 4) {
           const n = native.column_bytes(statement, i);
           if (n > 8 * 1024 * 1024) throw Error("Blob exceeds read limit");
           const p = native.column_blob(statement, i);
@@ -694,11 +702,14 @@ function nativeQuote(chat, content, reference) {
       if (cancelled) return;
       clearTimeout(timer);
       const holders = [],
+        inputs = [],
         result = Memory.alloc(64);
       const record = Memory.alloc(0x350),
-        extra = Memory.alloc(0x50);
+        extra = Memory.alloc(0x50),
+        original = Memory.alloc(0x278);
       let initializedRecord = false,
-        initializedExtra = false;
+        initializedExtra = false,
+        initializedOriginal = false;
       let stage = "context";
       result.writeByteArray(new Uint8Array(64));
       const shared = (rva, parent) => {
@@ -715,28 +726,44 @@ function nativeQuote(chat, content, reference) {
           root = shared(0x619ce90, context.readPointer());
         const manager = shared(0x61ad930, root.readPointer());
         stage = "record";
-        record.writeByteArray(new Uint8Array(0x350));
-        new NativeFunction(base.add(0x6197440), "void", ["pointer"])(record);
+        const setString = (target, value) => {
+          const input = stdString(value);
+          inputs.push(input);
+          assignString(target, input.object);
+        };
+        original.writeByteArray(new Uint8Array(0x278));
+        new NativeFunction(base.add(0x5cdbc20), "void", ["pointer"])(original);
+        initializedOriginal = true;
+        setString(original.add(0x18), reference.sender);
+        setString(original.add(0x30), chat);
+        setString(original.add(0x48), reference.sender);
+        setString(original.add(0x130), reference.content);
+        setString(original.add(0x260), reference.name);
+        original.add(0xf4).writeU32(reference.local_id);
+        original.add(0xf8).writeU64(new UInt64(reference.id));
+        original.add(0x100).writeU64(new UInt64(String(reference.timestamp)));
+        original.add(0x114).writeU32(Math.floor(reference.timestamp / 1000));
+        original.add(0x118).writeU32(2);
+        new NativeFunction(base.add(0x605ab40), "void", ["pointer", "uint"])(
+          original,
+          reference.type % 0x100000000,
+        );
+        new NativeFunction(base.add(0x605b5a0), "void", ["pointer", "uint"])(
+          original,
+          Math.floor(reference.type / 0x100000000),
+        );
+        // Clone the native payload into the original record's owned shared pointer.
+        new NativeFunction(base.add(0x605e8a0), "pointer", ["pointer", "pointer"])(
+          record,
+          original,
+        );
         initializedRecord = true;
-        const setString = (target, value) => assignString(target, stdString(value).object);
-        record.add(8).writeU64(new UInt64(String(reference.type)));
-        setString(record.add(0x10), reference.sender);
-        setString(record.add(0x28), chat);
-        setString(record.add(0x40), reference.sender);
         setString(record.add(0x58), chat);
-        record.add(0x90).writeU64(new UInt64(reference.id));
-        record.add(0xa0).writeU64(new UInt64(String(reference.timestamp)));
-        record.add(0xa8).writeU32(Math.floor(reference.timestamp / 1000));
-        record.add(0xac).writeU32(2);
-        setString(record.add(0xb8), reference.content);
-        setString(record.add(0x248), reference.name);
+        if (readStdString(record.add(0x238).readPointer().add(0x130)) !== reference.content)
+          throw Error("Native quote payload did not preserve the reference content");
         extra.writeByteArray(new Uint8Array(0x50));
         new NativeFunction(base.add(0x61124e0), "void", ["pointer"])(extra);
         initializedExtra = true;
-        setString(extra, reference.sender);
-        setString(extra.add(0x18), reference.name);
-        extra.add(0x30).writeU64(new UInt64(reference.id));
-        setString(extra.add(0x38), reference.content);
         stage = "quote factory";
         const source = Memory.alloc(16);
         source.writeByteArray(new Uint8Array(16));
@@ -778,6 +805,12 @@ function nativeQuote(chat, content, reference) {
           nativeDetails.frames = Thread.backtrace(error.context, Backtracer.ACCURATE)
             .map((address) => address.sub(base).toString())
             .join(",");
+          nativeDetails.stackCandidates = Thread.backtrace(error.context, Backtracer.FUZZY)
+            .filter(
+              (address) => address.compare(base) >= 0 && address.compare(base.add(0xa674ee0)) < 0,
+            )
+            .map((address) => address.sub(base).toString())
+            .join(",");
         }
         reject(
           Error("Quote " + stage + ": " + String(error) + " " + JSON.stringify(nativeDetails)),
@@ -788,6 +821,8 @@ function nativeQuote(chat, content, reference) {
         for (const holder of holders.reverse()) release(holder);
         if (initializedExtra) new NativeFunction(base.add(0x6112500), "void", ["pointer"])(extra);
         if (initializedRecord) new NativeFunction(base.add(0x472f190), "void", ["pointer"])(record);
+        if (initializedOriginal)
+          new NativeFunction(base.add(0x5cdc000), "void", ["pointer"])(original);
       }
     });
   });

@@ -12,6 +12,7 @@ RUN bun -e 'const f=await import("frida");await f.getLocalDevice();console.log("
 COPY tsconfig.json biome.json .gitignore ./
 COPY src ./src
 COPY tests ./tests
+COPY scripts/adb-login.ts ./scripts/adb-login.ts
 RUN bun run lint && bun run check && bun run test && bun run build
 
 FROM docker.io/oven/bun:1.3.14 AS runtime
