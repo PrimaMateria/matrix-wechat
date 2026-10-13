@@ -1,14 +1,14 @@
-// Live acceptance only: requires the actual logged-in WeChat container/account.
+// Live E2E: starts the real runtime, Synapse, and bridge; sends only to File Transfer.
 // Never creates a fake WeChat runtime or substitutes messages for native history.
 import { Database } from "bun:sqlite";
-import { chmod, mkdir, unlink } from "node:fs/promises";
+import { chmod, mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { configSchema } from "../src/config";
 import { generateRegistration } from "../src/matrix";
 import { hash } from "../src/store";
 
 const root = resolve(import.meta.dir, "../../..");
-const engine = process.env.CONTAINER_ENGINE || "podman";
+const engine = "podman";
 const original = process.env.WECHATLINUX_CONTAINER || "wechatlinux-demo";
 const image = process.env.BRIDGE_IMAGE || "localhost/matrix-wechat:dev";
 const runtimeImage = process.env.WECHAT_RUNTIME_IMAGE || "localhost/wechatlinux-demo:dev";
@@ -30,7 +30,6 @@ process.on("SIGINT", () => {
 process.on("SIGTERM", () => {
   interrupted = true;
 });
-let watcher: ReturnType<typeof Bun.spawn> | undefined;
 await mkdir(directory, { recursive: true, mode: 0o700 });
 await mkdir(`${directory}/bridge`, { mode: 0o700 });
 await mkdir(`${directory}/synapse`, { mode: 0o700 });
@@ -73,27 +72,35 @@ async function native(path: string) {
   assert(response.ok, "native HTTP response");
   return response.json() as Promise<any>;
 }
-const status = await native("/api/status");
-assert(status.state === "logged_in" && status.account?.id, "existing WeChat account is logged in");
-const account = status.account.id as string;
-const conversations = (await native("/api/conversations")).conversations as { id: string }[];
-assert(
-  conversations.some((c) => c.id === "filehelper"),
-  "real File Transfer conversation is available",
-);
+let account = "";
+let conversations: { id: string }[] = [];
 const source: any[] = [];
-for (const conversation of conversations) {
-  let cursor: string | undefined;
-  do {
-    const page = await native(
-      `/api/history?chat_id=${encodeURIComponent(conversation.id)}&limit=500${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
-    );
-    source.push(...page.messages);
-    cursor = page.next_cursor;
-  } while (cursor);
+async function captureSource() {
+  const status = await native("/api/status");
+  assert(
+    status.state === "logged_in" && status.account?.id,
+    "existing WeChat account is logged in",
+  );
+  account = status.account.id as string;
+  conversations = (await native("/api/conversations")).conversations as { id: string }[];
+  assert(
+    conversations.some((c) => c.id === "filehelper"),
+    "real File Transfer conversation is available",
+  );
+  source.length = 0;
+  for (const conversation of conversations) {
+    let cursor: string | undefined;
+    do {
+      const page = await native(
+        `/api/history?chat_id=${encodeURIComponent(conversation.id)}&limit=500${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+      );
+      source.push(...page.messages);
+      cursor = page.next_cursor;
+    } while (cursor);
+  }
+  assert(source.length > 0, "real native history is available");
+  console.log(`Live source: ${conversations.length} conversations, ${source.length} messages`);
 }
-assert(source.length > 0, "real native history is available");
-console.log(`Live source: ${conversations.length} conversations, ${source.length} messages`);
 const config = configSchema.parse({
   homeserver: { address: `http://${synapseName}:8008`, domain: server },
   appservice: { address: `http://${bridgeName}:17778`, registration: "/data/registration.yaml" },
@@ -152,6 +159,7 @@ for (const file of [
   "synapse/log.config",
 ])
   await chmod(`${directory}/${file}`, 0o600);
+let watcher: ReturnType<typeof Bun.spawn> | undefined;
 let token = "";
 async function matrix(path: string, method = "GET", body?: unknown) {
   const response = await fetch(`http://127.0.0.1:18008${path}`, {
@@ -203,21 +211,21 @@ for (const name of [bridgeName, runtimeName, synapseName])
     "acceptance container names are unused",
   );
 try {
-  assert(
-    (await run([engine, "image", "exists", image], true)).code === 0,
-    "bridge image has been built",
-  );
-  assert(
-    (await run([engine, "image", "exists", runtimeImage], true)).code === 0,
-    "runtime image has been built",
-  );
-  if ((await run([engine, "image", "exists", synapseImage], true)).code !== 0) {
-    // Reuse the installed pinned Synapse image when Docker and Podman stores differ.
-    const archive = `${directory}/synapse-image.tar`;
-    await run(["docker", "save", "-o", archive, "matrixdotorg/synapse:v1.162.0"]);
-    await run([engine, "load", "-i", archive]);
-    await unlink(archive);
+  for (const [override, tag, dockerfile] of [
+    [process.env.BRIDGE_IMAGE, image, "packages/matrix-bridge/Dockerfile"],
+    [process.env.WECHAT_RUNTIME_IMAGE, runtimeImage, "packages/wechat-runtime/Dockerfile"],
+  ]) {
+    if (!override) {
+      console.log(`Building ${dockerfile}`);
+      const result = await run([engine, "build", "-f", dockerfile!, "-t", tag!, "."]);
+      await Bun.write(
+        `${directory}/${dockerfile!.includes("matrix-bridge") ? "bridge" : "runtime"}-build.log`,
+        result.stdout,
+      );
+    }
   }
+  if ((await run([engine, "image", "exists", synapseImage], true)).code !== 0)
+    await run([engine, "pull", synapseImage]);
   await run([engine, "network", "create", network]);
   await run([
     engine,
@@ -255,8 +263,12 @@ try {
       mac,
     })
   ).access_token;
-  await run([engine, "stop", "--time", "20", original]);
-  stoppedOriginal = true;
+  const existing = await run([engine, "inspect", "--format", "{{.State.Running}}", original], true);
+  if (existing.code === 0 && existing.stdout.trim() === "true") {
+    await run([engine, "stop", "--time", "20", original]);
+    stoppedOriginal = true;
+  }
+  await mkdir(`${root}/data/wechat`, { recursive: true, mode: 0o700 });
   await run([
     engine,
     "run",
@@ -285,6 +297,20 @@ try {
     `${root}/data/wechat:/home/wechat:Z`,
     runtimeImage,
   ]);
+  watcher = Bun.spawn(["bun", "packages/wechat-runtime/scripts/adb-login.ts", "--watch"], {
+    cwd: root,
+    stdout: Bun.file(`${directory}/adb.log`),
+    stderr: Bun.file(`${directory}/adb-errors.log`),
+  });
+  console.log(
+    "WeChat login: the ADB watcher approves phone prompts. Scan the QR at http://127.0.0.1:18742/ if needed.",
+  );
+  await waitFor(
+    "WeChat login",
+    async () => (await native("/api/status")).state === "logged_in",
+    600000,
+  );
+  await captureSource();
   await run([
     engine,
     "run",
@@ -307,11 +333,6 @@ try {
     `${directory}/bridge:/data:Z`,
     image,
   ]);
-  watcher = Bun.spawn(["bun", "packages/wechat-runtime/scripts/adb-login.ts", "--watch"], {
-    cwd: root,
-    stdout: Bun.file(`${directory}/adb.log`),
-    stderr: Bun.file(`${directory}/adb-errors.log`),
-  });
   await waitFor("native login and full history import", ready, 240000);
   assert((await native("/api/status")).account.id === account, "saved native account is preserved");
   assert((await fetch("http://127.0.0.1:18742/")).ok, "web UI port 18742");
@@ -330,6 +351,7 @@ try {
   await joinPortals();
   let mappings = await capture();
   let media = 0,
+    thumbnails = 0,
     unavailable = 0;
   const kinds = new Set<string>();
   for (const message of source) {
@@ -354,6 +376,42 @@ try {
         event.content.body === message.text || event.content.body.endsWith(message.text),
         "actual native text survives conversion",
       );
+    if (message.payment)
+      assert(
+        event.content.msgtype === "m.notice" &&
+          event.content.format === "org.matrix.custom.html" &&
+          event.content.body.includes("Read only"),
+        "native payments arrive as read-only rich cards",
+      );
+    if (message.link?.thumbnail) {
+      const thumbnail =
+        event.content["com.beeper.linkpreviews"]?.[0]?.["og:image"] ||
+        event.content.formatted_body?.match(/src="(mxc:[^"]+)"/)?.[1];
+      assert(thumbnail, "shared card has a Matrix thumbnail");
+      const [, host, id] = thumbnail.match(/^mxc:\/\/([^/]+)\/(.+)$/);
+      const uploaded = await fetch(
+        `http://127.0.0.1:18008/_matrix/client/v1/media/download/${host}/${id}`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
+      const nativeThumbnail = await fetch(
+        `http://127.0.0.1:18742/api/thumbnail?chat_id=${encodeURIComponent(message.chat_id)}&message_id=${encodeURIComponent(message.id)}`,
+      );
+      assert(
+        uploaded.ok &&
+          nativeThumbnail.ok &&
+          hash(new Uint8Array(await uploaded.arrayBuffer())) ===
+            hash(new Uint8Array(await nativeThumbnail.arrayBuffer())),
+        "shared card thumbnail exactly matches native bytes",
+      );
+      if (message.kind === "link")
+        assert(
+          event.content.formatted_body?.includes("<td>"),
+          "article thumbnail sits beside its text",
+        );
+      thumbnails++;
+    }
     if (event.content.url) {
       const asset = event.content.url.match(/^mxc:\/\/([^/]+)\/(.+)$/);
       assert(asset, "received media is uploaded to Matrix");
@@ -520,6 +578,47 @@ try {
   console.log(
     "Actual Matrix → WeChat image, file and MP4 delivery passed with matching native bytes",
   );
+  await run([engine, "stop", "--time", "20", runtimeName]);
+  const recoveryText = `Runtime restart recovery ${crypto.randomUUID()}`;
+  const recovery = await matrix(
+    `/_matrix/client/v3/rooms/${encodeURIComponent(room)}/send/m.room.message/${crypto.randomUUID()}`,
+    "PUT",
+    { msgtype: "m.text", body: recoveryText },
+  );
+  await waitFor("queued send during runtime outage", async () => {
+    const db = database();
+    try {
+      return (
+        db.query<any, [string]>("SELECT state FROM inbox WHERE id=?").get(recovery.event_id)
+          ?.state === "queued"
+      );
+    } finally {
+      db.close();
+    }
+  });
+  await run([engine, "start", runtimeName]);
+  await waitFor(
+    "send after runtime login resumes",
+    async () => {
+      const db = database();
+      try {
+        return (
+          db.query<any, [string]>("SELECT state FROM inbox WHERE id=?").get(recovery.event_id)
+            ?.state === "delivered"
+        );
+      } finally {
+        db.close();
+      }
+    },
+    240000,
+  );
+  assert(
+    (await native("/api/history?chat_id=filehelper&limit=500")).messages.filter(
+      (m: any) => m.own && m.text === recoveryText,
+    ).length === 1,
+    "a queued Matrix send survives runtime restart and is delivered exactly once",
+  );
+  console.log("Runtime outage and login recovery passed against File Transfer");
   async function botRequest(path: string, body: unknown) {
     const response = await fetch(`http://127.0.0.1:18008${path}`, {
       method: "POST",
@@ -664,9 +763,11 @@ try {
         conversations: conversations.length,
         messages: source.length,
         media,
+        thumbnails,
         unavailable,
         kinds: [...kinds],
         restart_deduplication: true,
+        runtime_outage_recovery: true,
         native_text: true,
         native_reply: true,
         native_media: sentMedia,

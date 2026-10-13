@@ -1,4 +1,4 @@
-# One WeChat account and one Matrix owner per deployment.
+# Follow the current runtime login for this Matrix owner.
 homeserver:
   address: http://synapse:8008
   domain: example.com

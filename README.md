@@ -1,6 +1,6 @@
 # Matrix–WeChat
 
-A Bun/TypeScript Matrix bridge using `matrix-appservice-bridge` and the existing pinned WeChat Linux runtime. Each deployment connects one saved WeChat account to one Matrix owner.
+A Bun/TypeScript Matrix bridge using `matrix-appservice-bridge` and the existing pinned WeChat Linux runtime. The bridge follows whichever WeChat account is currently logged into the runtime, for one configured Matrix owner.
 
 The services run in **two separate containers**:
 
@@ -86,4 +86,4 @@ podman build -f packages/wechat-runtime/Dockerfile -t localhost/wechatlinux-demo
 
 Both Dockerfiles use the repository root as their build context. CI builds and publishes separate `ghcr.io/yamada-sexta/matrix-wechat` and `ghcr.io/yamada-sexta/matrix-wechat-runtime` images. Only the runtime image contains the pinned amd64 WeChat client, Frida, and GUI dependencies; the bridge needs no native-client capabilities or WeChat data volume.
 
-`bun run test:matrix` runs live acceptance with a real saved account and File Transfer. It creates separate bridge, runtime, and Synapse containers, checks history/media and restart deduplication, and **sends real text, replies, images, files, and video to File Transfer**. It temporarily stops the standalone `wechatlinux-demo` container to prevent concurrent access to account files, then restores it. Login approval may be needed. Override images with `BRIDGE_IMAGE` and `WECHAT_RUNTIME_IMAGE`; override the existing container with `WECHATLINUX_CONTAINER`. Private artifacts stay under ignored `data/matrix-acceptance/`.
+`bun run test:matrix` runs [the end-to-end script](packages/matrix-bridge/scripts/e2e.ts). It builds both local images, starts separate runtime, Synapse, and bridge containers, registers a test Matrix owner and appservice, and starts the ADB login watcher. Scan the QR manually if no saved account is available. It checks history/media, rich cards, restart deduplication and runtime outage recovery, and **sends real text, replies, images, files, and video only to File Transfer**. The account must have a cached File Transfer conversation and cached image, file, and MP4 examples; those actual bytes are reused for sending. Red packets and transfers are never sent or collected. If running, it temporarily stops the standalone `wechatlinux-demo` container to prevent concurrent access to account files, then restores it. Login approval may be needed. Override images with `BRIDGE_IMAGE` and `WECHAT_RUNTIME_IMAGE`; override the existing container with `WECHATLINUX_CONTAINER`. Private artifacts stay under ignored `data/matrix-acceptance/`.

@@ -5,9 +5,9 @@
   "scripts": {
     "start": "bun src/main.ts",
     "check": "tsc --noEmit",
-    "lint": "biome check src tests package.json tsconfig.json biome.json",
-    "format": "biome check --write src tests package.json tsconfig.json biome.json",
-    "test": "bun test tests"
+    "lint": "biome check src scripts package.json tsconfig.json biome.json",
+    "format": "biome check --write src scripts package.json tsconfig.json biome.json",
+    "test:e2e": "bun scripts/e2e.ts"
   },
   "dependencies": {
     "@vector-im/matrix-bot-sdk": "0.10.1-element.0",

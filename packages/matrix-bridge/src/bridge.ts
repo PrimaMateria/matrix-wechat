@@ -113,7 +113,14 @@ export class WeChatBridge {
   }
   private async status() {
     const snapshot = await this.runtime.rpc.status.query();
+    const previous = this.account;
     this.connection = snapshot.status;
+    if (previous !== this.account) {
+      this.lastMetadata = 0;
+      this.contacts.clear();
+      this.groups.clear();
+      this.joined.clear();
+    }
     const state = this.connection.state;
     if (this.store.meta("connection_state") !== state) {
       const generation = Number(this.store.meta("connection_generation") || "0") + 1;
@@ -590,12 +597,13 @@ export class WeChatBridge {
       }
     }
     const portal = this.store.portalForRoom(event.room_id);
-    if (!portal || portal.account !== this.account)
-      throw new Error("This room is not connected to the current WeChat account");
+    if (!portal) throw new Error("This room is not connected to the current WeChat account");
     if (event.type === "m.room.encrypted") unsupported("Encrypted messages");
     if (event.type !== "m.room.message") unsupported(`Sending ${event.type}`);
     if (this.connection.state !== "logged_in")
       throw new APIError("not_ready", "WeChat is disconnected; send is waiting for login");
+    if (portal.account !== this.account)
+      throw new Error("This room is not connected to the current WeChat account");
     // At most one unresolved native send per chat makes identical-send correlation safe.
     if (
       this.store
@@ -711,16 +719,6 @@ export class WeChatBridge {
     try {
       await this.status();
       if (this.connection.state === "logged_in") {
-        const bound = this.store.meta("account");
-        if (bound && bound !== this.account) {
-          await this.notice(
-            this.management,
-            "A different WeChat account is active. Use a separate deployment and database for that account.",
-            `account-mismatch:${this.account}`,
-          );
-          return;
-        }
-        this.store.setMeta("account", this.account);
         if (Date.now() - this.lastMetadata >= 60000) await this.metadata();
         else
           for (const conversation of await this.conversationsList())
