@@ -2,6 +2,89 @@ import { expect, test } from "bun:test";
 import { createHandler } from "../src/server";
 import { APIError, type Event } from "../src/types";
 
+test("image uploads enforce local origin and bounded multipart input before sending", async () => {
+  const calls: any[] = [];
+  const handler = createHandler({
+    status: { state: "logged_in" },
+    qrAt: 0,
+    onEvent: () => () => {},
+    dispatch: async () => ({}),
+    sendImage: async (chat, bytes) => {
+      calls.push({ chat, bytes });
+      return { success: true };
+    },
+  });
+  const form = () => {
+    const f = new FormData();
+    f.set("chat_id", "filehelper");
+    f.set("image", new File([Uint8Array.from([137, 80, 78, 71])], "test.png"));
+    return f;
+  };
+  const response = await handler(
+    new Request("http://127.0.0.1/api/send-image", {
+      method: "POST",
+      body: form(),
+      headers: { Origin: "http://127.0.0.1" },
+    }),
+  );
+  expect(response.status).toBe(200);
+  expect(calls[0].chat).toBe("filehelper");
+  expect([...calls[0].bytes]).toEqual([137, 80, 78, 71]);
+  expect(
+    (
+      await handler(
+        new Request("http://attacker.example/api/send-image", { method: "POST", body: form() }),
+      )
+    ).status,
+  ).toBe(403);
+  expect(
+    (
+      await handler(
+        new Request("http://127.0.0.1/api/send-image", {
+          method: "POST",
+          body: form(),
+          headers: { Origin: "http://attacker.example" },
+        }),
+      )
+    ).status,
+  ).toBe(403);
+  expect(
+    (
+      await handler(
+        new Request("http://127.0.0.1/api/send-image", {
+          method: "POST",
+          body: "",
+          headers: {
+            "Content-Type": "multipart/form-data; boundary=x",
+            "Content-Length": String(21 * 1024 * 1024),
+          },
+        }),
+      )
+    ).status,
+  ).toBe(400);
+  expect(calls).toHaveLength(1);
+});
+test("file media is served as a download, with a safely encoded native filename", async () => {
+  const handler = createHandler({
+    status: { state: "logged_in" },
+    qrAt: 0,
+    onEvent: () => () => {},
+    dispatch: async () => ({}),
+    media: async () => ({
+      bytes: Buffer.from("document"),
+      type: "application/octet-stream",
+      name: "report's 文档.txt",
+    }),
+  });
+  const r = await handler(
+    new Request("http://127.0.0.1/api/media?chat_id=filehelper&message_id=123"),
+  );
+  expect(r.status).toBe(200);
+  expect(r.headers.get("Content-Disposition")).toContain("filename*=UTF-8''report%27s%20");
+  expect(r.headers.get("X-Content-Type-Options")).toBe("nosniff");
+  expect(await r.text()).toBe("document");
+});
+
 function setup() {
   const subscribers = new Set<(event: Event) => void>(),
     calls: any[] = [];

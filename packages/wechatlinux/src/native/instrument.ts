@@ -599,6 +599,16 @@ function outboundCall(payload, queued = false) {
 }
 
 rpc.exports = {
+  sendimage(chat, url) {
+    if (
+      typeof chat !== "string" ||
+      !chat ||
+      typeof url !== "string" ||
+      !/^http:\/\/127\.0\.0\.1:18742\/native-upload\/[a-f0-9-]{36}$/.test(url)
+    )
+      throw Error("Invalid image upload");
+    return outboundCall(JSON.stringify({ chat_id: chat, message_type: 3, content_xml: url }), true);
+  },
   sendprobe() {
     return outboundCall("{}");
   },

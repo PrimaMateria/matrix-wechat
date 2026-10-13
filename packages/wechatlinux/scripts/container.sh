@@ -87,6 +87,22 @@ case "$command" in
             fi
             run_options+=(--userns keep-id:uid=1000,gid=1000)
         fi
+        # Extract and verify inside a temporary container, without launching WeChat.
+        prepare_options=(--rm --cap-drop ALL --security-opt no-new-privileges
+            --volume "$data_dir:/home/wechat:Z" --entrypoint bun)
+        if [[ "$engine" == podman ]]; then prepare_options+=(--userns keep-id:uid=1000,gid=1000); fi
+        native_executable=$("$engine" run "${prepare_options[@]}" "$image_name" -e \
+            'import {Runtime} from "/opt/wechatlinux/src/runtime.ts";console.log(await new Runtime().executable())')
+        case "$native_executable" in
+            /home/wechat/.cache/wechatlinux/app-*/opt/wechat/wechat)
+                artifact_relative="${native_executable#/home/wechat/}"
+                artifact_relative="${artifact_relative%/opt/wechat/wechat}"
+                ;;
+            *) printf 'Unexpected prepared executable path\n' >&2; exit 1 ;;
+        esac
+        # Persistent account state is writable; the supplied app and installation are not.
+        run_options+=(--volume "$data_dir/WeChatLinux_x86_64.AppImage:/home/wechat/WeChatLinux_x86_64.AppImage:ro,Z"
+            --volume "$data_dir/$artifact_relative:/home/wechat/$artifact_relative:ro,Z")
         "$engine" run "${run_options[@]}" "$image_name"
         printf 'QR login page: http://127.0.0.1:18742/\n'
         ;;

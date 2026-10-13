@@ -312,3 +312,15 @@ button.send:hover {
   gap: 10px;
   padding: 5px 0;
 }
+
+.attachmentImage {
+  display: block;
+  max-width: min(360px, 100%);
+  max-height: 360px;
+  object-fit: contain;
+  border-radius: 6px;
+}
+
+.hidden {
+  display: none;
+}

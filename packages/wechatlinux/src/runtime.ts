@@ -1,14 +1,7 @@
-import { createHash } from "node:crypto";
-import {
-  closeSync,
-  createReadStream,
-  createWriteStream,
-  existsSync,
-  openSync,
-  readSync,
-} from "node:fs";
-import { appendFile, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { closeSync, createReadStream, existsSync, openSync, readSync } from "node:fs";
+import { appendFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import {
   BarcodeFormat,
   BinaryBitmap,
@@ -19,6 +12,7 @@ import {
 } from "@zxing/library";
 import * as frida from "frida";
 import { PNG } from "pngjs";
+import { receivedFile, receivedImage } from "./attachments";
 import { voiceAudioProcess } from "./audio";
 import { imageType, stickerImage } from "./media";
 import outbound from "./native/outbound_profile.json";
@@ -77,6 +71,63 @@ export class Runtime {
   private subscribers = new Set<(e: Event) => void>();
   private sendReady = false;
   verified = new Set<string>();
+  private uploads = new Map<
+    string,
+    { bytes: Buffer; type: string; account: string; expires: number }
+  >();
+
+  uploaded(token: string) {
+    const asset = this.uploads.get(token);
+    if (
+      !asset ||
+      asset.expires < Date.now() ||
+      asset.account !== this.account ||
+      this.status.state !== "logged_in"
+    )
+      throw new APIError("not_found", "Upload is unavailable");
+    return asset;
+  }
+
+  async sendImage(chat: string, bytes: Buffer) {
+    const type = imageType(bytes);
+    if (
+      !chat ||
+      chat.length > 256 ||
+      !bytes.length ||
+      bytes.length > 20 * 1024 * 1024 ||
+      !["image/png", "image/jpeg"].includes(type || "")
+    )
+      throw new APIError("invalid_params", "Choose a PNG or JPEG image up to 20 MiB");
+    return this.operation(async () => {
+      if (this.status.state !== "logged_in" || !this.sendReady)
+        throw new APIError("not_ready", "WeChat is still initializing");
+      if (
+        this.uploads.size >= 8 ||
+        [...this.uploads.values()].reduce((size, asset) => size + asset.bytes.length, 0) +
+          bytes.length >
+          64 * 1024 * 1024
+      )
+        throw new APIError("not_ready", "Too many uploads; try again shortly");
+      const token = randomUUID();
+      this.uploads.set(token, {
+        bytes,
+        type: type!,
+        account: this.account,
+        expires: Date.now() + 120000,
+      });
+      setTimeout(() => this.uploads.delete(token), 120000).unref();
+      const response = await this.native(
+        "sendimage",
+        chat,
+        "http://127.0.0.1:18742/native-upload/" + token,
+      );
+      if (response.success !== true)
+        throw new APIError("send_failed", response.error_message || "WeChat rejected the image");
+      this.dirty = true;
+      this.verified.add("send.image");
+      return { success: true, acknowledgement: "native_handler" };
+    });
+  }
   onEvent(fn: (e: Event) => void) {
     this.subscribers.add(fn);
     return () => {
@@ -424,13 +475,15 @@ export class Runtime {
         voice: message.kind === "audio" ? await this.store.voice(message) : undefined,
       };
     });
-    return message.voice
-      ? voiceAudioProcess(message.voice)
-      : stickerImage(message.message, join(data, "media"));
+    if (message.voice) return voiceAudioProcess(message.voice);
+    if (message.message.kind === "image") return receivedImage(message.message);
+    if (message.message.kind === "file") return receivedFile(message.message);
+    return stickerImage(message.message, join(data, "media"));
   }
   async close() {
     if (this.stopped) return;
     this.stopped = true;
+    this.uploads.clear();
     this.qr = undefined;
     try {
       if (this.pid && this.device) await this.device.kill(this.pid);

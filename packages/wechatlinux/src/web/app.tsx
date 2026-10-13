@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Contact, Conversation, Event, Group, Message, Status } from "../types";
 import "./app.css";
@@ -250,6 +250,28 @@ function App() {
       setSending(false);
     }
   }
+  const imageInput = useRef<HTMLInputElement>(null);
+  async function sendImage(file: File) {
+    if (sendLock.current || !selected) return;
+    sendLock.current = true;
+    setSending(true);
+    setError("");
+    try {
+      const form = new FormData();
+      form.set("chat_id", selected);
+      form.set("image", file);
+      const response = await fetch("/api/send-image", { method: "POST", body: form });
+      const result = await response.json();
+      if (!response.ok) throw Error(result.error?.message || "Image could not be sent");
+      await history();
+      await conversations();
+    } catch (error) {
+      report(error);
+    } finally {
+      sendLock.current = false;
+      setSending(false);
+    }
+  }
   const group = groups.get(selected),
     ordered = [...messages].sort((a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id));
   return (
@@ -369,9 +391,9 @@ function App() {
                   )}
                   {m.reply_to && <blockquote>Reply to {m.reply_to}</blockquote>}
                   <div>
-                    {m.kind === "sticker" ? (
+                    {m.kind === "sticker" || m.kind === "image" ? (
                       <img
-                        className="sticker"
+                        className={m.kind === "image" ? "attachmentImage" : "sticker"}
                         src={
                           "/api/media?" +
                           new URLSearchParams({
@@ -379,7 +401,7 @@ function App() {
                             message_id: m.id,
                           })
                         }
-                        alt="Sticker"
+                        alt={m.kind === "image" ? "Image attachment" : "Sticker"}
                       />
                     ) : m.kind === "audio" ? (
                       <audio
@@ -394,6 +416,16 @@ function App() {
                           })
                         }
                       />
+                    ) : m.kind === "file" ? (
+                      <a
+                        download
+                        href={
+                          "/api/media?" +
+                          new URLSearchParams({ chat_id: m.chat_id, message_id: m.id })
+                        }
+                      >
+                        {m.media?.name || "Download file"}
+                      </a>
                     ) : (
                       (m.text ??
                       (m.kind === "location"
@@ -417,6 +449,24 @@ function App() {
                   void send();
                 }}
               >
+                <input
+                  className="hidden"
+                  ref={imageInput}
+                  type="file"
+                  accept="image/png,image/jpeg"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = "";
+                    if (file) void sendImage(file);
+                  }}
+                />
+                <button
+                  type="button"
+                  disabled={sending}
+                  onClick={() => imageInput.current?.click()}
+                >
+                  Image
+                </button>
                 <textarea
                   aria-label="Message"
                   placeholder="Message"

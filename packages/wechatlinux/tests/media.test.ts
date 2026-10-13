@@ -22,6 +22,18 @@ const message = (url = "http://snsvideo.c2c.wechat.com/120/20201/stodownload"): 
     decoded_content: `<msg><emoji md5='${md5}' aeskey='private-fixture' cdnurl='${url}'/></msg>`,
   },
 });
+test("app subtype-8 GIF metadata resolves its protobuf MD5 and original CDN URL", () => {
+  const url = "http://snsvideo.c2c.wechat.com/120/20201/stodownload";
+  const bytes = Buffer.concat([
+    Buffer.from([10, 32]),
+    Buffer.from(md5),
+    Buffer.from([18, url.length]),
+    Buffer.from(url),
+  ]);
+  const msg = message();
+  msg.native!.decoded_content = `<msg><appmsg><type>8</type><appattach><emojiinfo>${bytes.toString("base64")}</emojiinfo></appattach></appmsg></msg>`;
+  expect(stickerMetadata(msg)).toEqual({ md5, url });
+});
 test("native emoji XML supports single quotes and does not export its media key", () => {
   const metadata = stickerMetadata(message());
   expect(metadata.md5).toBe(md5);

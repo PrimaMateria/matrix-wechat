@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { XMLParser } from "fast-xml-parser";
+import { protobufBytes } from "./protobuf";
 import { APIError, type Message } from "./types";
 export function imageType(bytes: Uint8Array) {
   const b = Buffer.from(bytes);
@@ -27,6 +28,13 @@ export function stickerMetadata(message: Message) {
       parseTagValue: false,
     }).parse(content),
     emoji = root.msg?.emoji || root.msg?.emoticon;
+  const app = root.msg?.appmsg;
+  if (!emoji && String(app?.type) === "8" && typeof app.appattach?.emojiinfo === "string") {
+    const bytes = Buffer.from(app.appattach.emojiinfo, "base64");
+    const md5 = protobufBytes(bytes, 1)?.toString(),
+      url = protobufBytes(bytes, 2)?.toString();
+    if (md5 && /^[a-f0-9]{32}$/i.test(md5) && url) return { md5: md5.toLowerCase(), url };
+  }
   if (!emoji || !/^[a-f0-9]{32}$/i.test(emoji.md5))
     throw new APIError("media_unavailable", "Sticker metadata is unavailable");
   return {

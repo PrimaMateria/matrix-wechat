@@ -227,6 +227,7 @@ export class Storage {
     const app = root?.msg?.appmsg || root?.appmsg;
     if (type === 49 && app) {
       if (String(app.type) === "6") m.kind = "file";
+      if (String(app.type) === "8") m.kind = "sticker";
       if (String(app.type) === "57") {
         m.kind = "text";
         m.text = app.title || "";
@@ -250,6 +251,11 @@ export class Storage {
     if (typeof mentions === "string" && mentions) m.mentions = mentions.split(",").filter(Boolean);
     if (["image", "sticker", "video", "audio", "file"].includes(m.kind))
       m.media = { id: m.id, kind: m.kind, state: "pending" };
+    if (m.kind === "file" && app && m.media) {
+      m.media.name = String(app.title || "File");
+      const size = Number(app.appattach?.totallen);
+      if (Number.isSafeInteger(size) && size >= 0) m.media.size = size;
+    }
     return [key, m];
   }
   private async messages(chatFilter?: string) {

@@ -44,7 +44,7 @@ export interface Message {
   mentions?: string[];
   reply_to?: string;
   location?: { latitude: number; longitude: number; label: string };
-  media?: { id: string; kind: string; state: string };
+  media?: { id: string; kind: string; state: string; name?: string; size?: number };
   native?: Row;
 }
 export interface Event {

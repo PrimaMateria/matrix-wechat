@@ -4,8 +4,10 @@ import { privateAPI } from "./private-api";
 import { Runtime } from "./runtime";
 import { APIError, type Event, publicFields, type Row, type Status } from "./types";
 export interface Backend {
+  sendImage?(chat: string, bytes: Buffer): Promise<unknown>;
+  uploaded?(token: string): { bytes: Buffer; type: string };
   avatar?(id: string): Promise<{ bytes: Buffer; type: string }>;
-  media?(chat: string, id: string): Promise<{ bytes: Buffer; type: string }>;
+  media?(chat: string, id: string): Promise<{ bytes: Buffer; type: string; name?: string }>;
   status: Status;
   qr?: Buffer;
   qrAt: number;
@@ -39,6 +41,46 @@ export function createHandler(backend: Backend, webRoot = join(import.meta.dir, 
     if (!["127.0.0.1", "localhost", "[::1]"].includes(hostname))
       return json({ error: { code: "invalid_host", message: "Use localhost" } }, 403);
     try {
+      if (request.method === "GET" && url.pathname.startsWith("/native-upload/")) {
+        if (!backend.uploaded) throw new APIError("not_found", "Upload is unavailable");
+        const asset = backend.uploaded(url.pathname.slice("/native-upload/".length));
+        return new Response(new Uint8Array(asset.bytes), {
+          headers: { ...headers, "Content-Type": asset.type },
+        });
+      }
+      if (request.method === "POST" && url.pathname === "/api/send-image") {
+        const origin = request.headers.get("Origin");
+        if (origin && new URL(origin).host !== host)
+          return json({ error: { code: "invalid_origin", message: "Origin is not allowed" } }, 403);
+        const contentType = request.headers.get("Content-Type") || "";
+        if (!contentType.startsWith("multipart/form-data;"))
+          throw new APIError("invalid_params", "An image upload is required");
+        const limit = 20 * 1024 * 1024 + 16384;
+        if (Number(request.headers.get("Content-Length") || 0) > limit)
+          throw new APIError("invalid_params", "Image upload is too large");
+        const reader = request.body?.getReader(),
+          chunks: Uint8Array[] = [];
+        let length = 0;
+        if (reader)
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            length += value.length;
+            if (length > limit) {
+              await reader.cancel();
+              throw new APIError("invalid_params", "Image upload is too large");
+            }
+            chunks.push(value);
+          }
+        const form = await new Response(Buffer.concat(chunks), {
+          headers: { "Content-Type": contentType },
+        }).formData();
+        const chat = form.get("chat_id"),
+          file = form.get("image");
+        if (typeof chat !== "string" || !chat || !(file instanceof File) || !backend.sendImage)
+          throw new APIError("invalid_params", "A conversation and image are required");
+        return json(await backend.sendImage(chat, Buffer.from(await file.arrayBuffer())));
+      }
       if (request.method === "GET" && url.pathname === "/api/events") {
         let unsubscribe = () => {},
           timer: ReturnType<typeof setInterval> | undefined;
@@ -99,7 +141,20 @@ export function createHandler(backend: Backend, webRoot = join(import.meta.dir, 
           url.searchParams.get("message_id") || "",
         );
         return new Response(new Uint8Array(asset.bytes), {
-          headers: { ...headers, "Content-Type": asset.type },
+          headers: {
+            ...headers,
+            "Content-Type": asset.type,
+            ...(asset.name
+              ? {
+                  "Content-Disposition":
+                    "attachment; filename*=UTF-8''" +
+                    encodeURIComponent(asset.name).replace(
+                      /['()*]/g,
+                      (character) => "%" + character.charCodeAt(0).toString(16).toUpperCase(),
+                    ),
+                }
+              : {}),
+          },
         });
       }
       if (request.method === "GET" && url.pathname === "/qr.png") {

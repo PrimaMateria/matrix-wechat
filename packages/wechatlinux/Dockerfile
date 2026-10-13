@@ -5,9 +5,9 @@ RUN ln -sf /usr/local/bin/bun /usr/local/bin/node
 COPY package.json bun.lock ./
 RUN bun install --frozen-lockfile
 RUN bun -e 'const f=await import("frida");await f.getLocalDevice();console.log("Frida binding works under Bun")'
-COPY tsconfig.json ./
+COPY tsconfig.json biome.json .gitignore ./
 COPY src ./src
-RUN bun run check && bun run build
+RUN bunx biome check src biome.json package.json tsconfig.json && bun run check && bun run build
 
 FROM docker.io/oven/bun:1.3.14 AS runtime
 USER root
