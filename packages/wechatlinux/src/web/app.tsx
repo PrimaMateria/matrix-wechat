@@ -191,6 +191,7 @@ function App() {
       if (event.account_id && event.account_id !== account.current) return;
       if (event.type === "login.state") {
         setError("");
+        if (event.data?.status) setStatus(event.data.status as Status);
         void poll();
         return;
       }
@@ -225,7 +226,6 @@ function App() {
     setError("");
     try {
       await api("login/retry", { mode }, true);
-      setStatus(await api<Status>("status"));
     } catch (e) {
       report(e);
     } finally {
@@ -252,7 +252,8 @@ function App() {
     }
   }
   const imageInput = useRef<HTMLInputElement>(null);
-  async function sendImage(file: File) {
+  const fileInput = useRef<HTMLInputElement>(null);
+  async function sendAttachment(file: File, kind: "image" | "file") {
     if (sendLock.current || !selected) return;
     sendLock.current = true;
     setSending(true);
@@ -260,10 +261,10 @@ function App() {
     try {
       const form = new FormData();
       form.set("chat_id", selected);
-      form.set("image", file);
-      const response = await fetch("/api/send-image", { method: "POST", body: form });
+      form.set(kind, file);
+      const response = await fetch(`/api/send-${kind}`, { method: "POST", body: form });
       const result = await response.json();
-      if (!response.ok) throw Error(result.error?.message || "Image could not be sent");
+      if (!response.ok) throw Error(result.error?.message || "Attachment could not be sent");
       await history();
       await conversations();
     } catch (error) {
@@ -311,7 +312,13 @@ function App() {
               <p>Scan with WeChat to sign in.</p>
             </>
           ) : (
-            <p>{status.state === "disconnected" ? "WeChat disconnected." : "Connecting…"}</p>
+            <p>
+              {status.state === "disconnected"
+                ? "WeChat disconnected."
+                : status.state === "signing_in"
+                  ? "Signing in…"
+                  : "Connecting…"}
+            </p>
           )}
           <div>
             <button disabled={loginBusy} onClick={() => void retryLogin("saved")}>
@@ -454,11 +461,11 @@ function App() {
                   className="hidden"
                   ref={imageInput}
                   type="file"
-                  accept="image/png,image/jpeg"
+                  accept="image/png,image/jpeg,image/gif,image/webp"
                   onChange={(event) => {
                     const file = event.target.files?.[0];
                     event.target.value = "";
-                    if (file) void sendImage(file);
+                    if (file) void sendAttachment(file, "image");
                   }}
                 />
                 <button
@@ -467,6 +474,19 @@ function App() {
                   onClick={() => imageInput.current?.click()}
                 >
                   Image
+                </button>
+                <input
+                  className="hidden"
+                  ref={fileInput}
+                  type="file"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    event.target.value = "";
+                    if (file) void sendAttachment(file, "file");
+                  }}
+                />
+                <button type="button" disabled={sending} onClick={() => fileInput.current?.click()}>
+                  File
                 </button>
                 <textarea
                   aria-label="Message"

@@ -1,6 +1,15 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, createReadStream, existsSync, openSync, readSync } from "node:fs";
-import { appendFile, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdir,
+  readFile,
+  rename,
+  rmdir,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import {
   BarcodeFormat,
@@ -71,7 +80,90 @@ export class Runtime {
   private subscribers = new Set<(e: Event) => void>();
   private sendReady = false;
   verified = new Set<string>();
-  private uploads = new Map<string, { path: string; cachedPath: string; size: number }>();
+  private uploads = new Map<
+    string,
+    { path: string; cachedPath: string; size: number; directory?: string }
+  >();
+
+  async sendFile(chat: string, bytes: Buffer, name: string) {
+    if (
+      !chat ||
+      chat.length > 256 ||
+      !bytes.length ||
+      bytes.length > 64 * 1024 * 1024 ||
+      !name ||
+      name === "." ||
+      name === ".." ||
+      Buffer.byteLength(name) > 200 ||
+      /[/\\\x00-\x1f\x7f]/.test(name)
+    )
+      throw new APIError("invalid_params", "Choose a file up to 64 MiB with a valid filename");
+    return this.operation(async () => {
+      if (this.status.state !== "logged_in" || !this.sendReady)
+        throw new APIError("not_ready", "WeChat is still initializing");
+      if (
+        this.uploads.size >= 8 ||
+        [...this.uploads.values()].reduce((n, upload) => n + upload.size, 0) + bytes.length >
+          64 * 1024 * 1024
+      )
+        throw new APIError("not_ready", "Too many uploads; try again shortly");
+      const token = randomUUID(),
+        directory = join(data, "uploads", token),
+        path = join(directory, name);
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      const cleanup = async () => {
+        this.uploads.delete(token);
+        await unlink(path).catch(() => {});
+        await rmdir(directory).catch(() => {});
+      };
+      try {
+        await writeFile(path, bytes, { mode: 0o600, flag: "wx" });
+      } catch (error) {
+        await cleanup();
+        throw error;
+      }
+      this.uploads.set(token, { path, cachedPath: path, directory, size: bytes.length });
+      const timer = setTimeout(() => void cleanup(), 120000);
+      timer.unref();
+      const response = await this.native("sendfile", chat, path, name);
+      if (response.success !== true) {
+        clearTimeout(timer);
+        await cleanup();
+        throw new APIError("send_failed", response.error_message || "WeChat rejected the file");
+      }
+      // The native callback acknowledges queueing, before the asynchronous CDN upload.
+      // Retain the source until a server ID appears; reconcile without blocking other operations.
+      const started = Date.now() / 1000;
+      const finish = async () => {
+        for (let attempt = 0; attempt < 100 && !this.stopped; attempt++) {
+          await sleep(1000);
+          try {
+            const page = await this.operation(() =>
+              this.store.history({ chat_id: chat, limit: 50 }),
+            );
+            if (
+              page.messages.some(
+                (m) =>
+                  m.own &&
+                  m.kind === "file" &&
+                  m.media?.name === name &&
+                  m.timestamp >= started - 2 &&
+                  !m.id.startsWith("local:"),
+              )
+            ) {
+              clearTimeout(timer);
+              await cleanup();
+              return;
+            }
+          } catch {}
+        }
+      };
+      void finish();
+      this.dirty = true;
+      this.verified.add("send.file");
+      return { success: true, acknowledgement: "native_handler" };
+    });
+  }
 
   async sendImage(chat: string, bytes: Buffer) {
     const type = imageType(bytes);
@@ -80,9 +172,9 @@ export class Runtime {
       chat.length > 256 ||
       !bytes.length ||
       bytes.length > 20 * 1024 * 1024 ||
-      !["image/png", "image/jpeg"].includes(type || "")
+      !["image/png", "image/jpeg", "image/gif", "image/webp"].includes(type || "")
     )
-      throw new APIError("invalid_params", "Choose a PNG or JPEG image up to 20 MiB");
+      throw new APIError("invalid_params", "Choose a PNG, JPEG, GIF or WebP image up to 20 MiB");
     return this.operation(async () => {
       if (this.status.state !== "logged_in" || !this.sendReady)
         throw new APIError("not_ready", "WeChat is still initializing");
@@ -94,7 +186,7 @@ export class Runtime {
         throw new APIError("not_ready", "Too many uploads; try again shortly");
       const token = randomUUID();
       const directory = join(data, "uploads"),
-        path = join(directory, token + (type === "image/png" ? ".png" : ".jpg"));
+        path = join(directory, token + "." + (type === "image/jpeg" ? "jpg" : type!.slice(6)));
       const database = (await this.store.databases()).find(
         (db) => db.path.includes("/" + this.account + "_") && db.path.includes("/db_storage/"),
       );
@@ -140,6 +232,11 @@ export class Runtime {
   }
   emit(e: Event) {
     for (const fn of this.subscribers) fn(e);
+  }
+  private updateStatus(status: Status) {
+    if (JSON.stringify(status) === JSON.stringify(this.status)) return;
+    this.status = status;
+    this.emit({ type: "login.state", data: { status } });
   }
   operation<T>(fn: () => Promise<T>): Promise<T> {
     const task = this.serial.then(fn);
@@ -225,7 +322,7 @@ export class Runtime {
     this.session = await this.device.attach(this.pid);
     this.session.detached.connect(() => {
       if (!this.stopped) {
-        this.status = { state: "disconnected" };
+        this.updateStatus({ state: "disconnected" });
         this.emit({ type: "connection.closed" });
       }
     });
@@ -244,13 +341,18 @@ export class Runtime {
         const p = message.payload;
         if (p.type === "ready") initialized = true;
         else if (p.type === "login_state") {
+          console.log("Native login state:", JSON.stringify(p.state));
           this.lastQR = 0;
           this.qr = undefined;
           this.qrAt = 0;
-          this.status = {
-            state: [3, 4].includes(p.state.phase) ? "awaiting_confirmation" : "awaiting_scan",
-          };
-          this.emit({ type: "login.state" });
+          this.updateStatus({
+            state:
+              !p.state.active || (p.state.phase === 4 && [3, 4].includes(p.state.request))
+                ? "signing_in"
+                : [3, 4].includes(p.state.phase)
+                  ? "awaiting_confirmation"
+                  : "awaiting_scan",
+          });
         } else if (p.type === "change_hint") {
           this.dirty = true;
           this.store.invalidate();
@@ -319,10 +421,10 @@ export class Runtime {
             );
             this.account = accounts.size === 1 ? [...accounts][0]! : "";
             if (this.account && !state.login_view_active) {
-              this.status = {
+              this.updateStatus({
                 state: "logged_in",
                 account: { id: this.account },
-              };
+              });
               this.qr = undefined;
               if (this.dirty || !this.baseline) {
                 this.dirty = false;
@@ -358,18 +460,19 @@ export class Runtime {
                 this.sendReady = false;
               }
               this.baseline = false;
-              this.status = {
-                state: this.loginRequested ? "awaiting_confirmation" : "awaiting_scan",
-              };
               if (!this.loginRequested && state.login?.phase === 5 && state.login?.can_resume) {
                 const result = await this.native("login", "saved");
                 this.loginRequested = result.queued === true;
               }
-              this.status = {
-                state: [3, 4].includes(state.login?.phase)
-                  ? "awaiting_confirmation"
-                  : "awaiting_scan",
-              };
+              this.updateStatus({
+                state:
+                  !state.login?.active ||
+                  (state.login?.phase === 4 && [3, 4].includes(state.login?.request))
+                    ? "signing_in"
+                    : [3, 4].includes(state.login?.phase)
+                      ? "awaiting_confirmation"
+                      : "awaiting_scan",
+              });
               if (state.login?.phase === 0 && Date.now() - this.lastQR > 4000) {
                 this.lastQR = Date.now();
                 await this.refreshQR();
@@ -378,7 +481,7 @@ export class Runtime {
           });
         } catch (e) {
           if (e instanceof APIError && e.code === "disconnected")
-            this.status = { state: "disconnected" };
+            this.updateStatus({ state: "disconnected" });
           else console.error("Client initialization:", e instanceof APIError ? e.code : "failed");
         } finally {
           this.tickBusy = false;
@@ -490,6 +593,7 @@ export class Runtime {
     for (const upload of this.uploads.values()) {
       await unlink(upload.path).catch(() => {});
       await unlink(upload.cachedPath).catch(() => {});
+      if (upload.directory) await rmdir(upload.directory).catch(() => {});
     }
     this.uploads.clear();
     this.qr = undefined;

@@ -2,6 +2,40 @@ import { expect, test } from "bun:test";
 import { createHandler } from "../src/server";
 import { APIError, type Event } from "../src/types";
 
+test("file uploads preserve the filename and bytes without accepting remote origins", async () => {
+  const calls: any[] = [];
+  const handler = createHandler({
+    status: { state: "logged_in" },
+    qrAt: 0,
+    onEvent: () => () => {},
+    dispatch: async () => ({}),
+    sendFile: async (chat, bytes, name) => {
+      calls.push({ chat, bytes, name });
+      return { success: true };
+    },
+  });
+  const form = () => {
+    const body = new FormData();
+    body.set("chat_id", "filehelper");
+    body.set("file", new File(["file content"], "report 文档.txt"));
+    return body;
+  };
+  const request = (origin: string) =>
+    new Request("http://127.0.0.1/api/send-file", {
+      method: "POST",
+      body: form(),
+      headers: { Origin: origin },
+    });
+  expect((await handler(request("https://attacker.example"))).status).toBe(403);
+  expect(calls).toHaveLength(0);
+  expect((await handler(request("http://127.0.0.1"))).status).toBe(200);
+  expect(calls[0]).toEqual({
+    chat: "filehelper",
+    bytes: Buffer.from("file content"),
+    name: "report 文档.txt",
+  });
+});
+
 test("image uploads enforce local origin and bounded multipart input before sending", async () => {
   const calls: any[] = [];
   const handler = createHandler({

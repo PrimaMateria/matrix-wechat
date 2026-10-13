@@ -56,7 +56,13 @@ export interface Event {
   data?: Row;
 }
 export interface Status {
-  state: "starting" | "awaiting_scan" | "awaiting_confirmation" | "logged_in" | "disconnected";
+  state:
+    | "starting"
+    | "signing_in"
+    | "awaiting_scan"
+    | "awaiting_confirmation"
+    | "logged_in"
+    | "disconnected";
   account?: { id: string };
   error?: string;
 }

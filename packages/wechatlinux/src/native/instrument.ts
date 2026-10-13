@@ -280,6 +280,7 @@ Interceptor.attach(base.add(0x487f250), {
   onLeave() {
     loginModel = this.self;
     loginOwnerThread = this.threadId;
+    send({ type: "login_state", state: loginState() });
     hint("login_view_open", {});
   },
 });
@@ -287,6 +288,7 @@ Interceptor.attach(base.add(0x48808e0), {
   onEnter(a) {
     if (loginModel.equals(a[0])) {
       loginModel = nullPtr;
+      send({ type: "login_state", state: { active: false } });
       hint("login_view_closed", {});
     }
   },
@@ -494,6 +496,31 @@ function readStdString(p) {
   return (long ? p.add(16).readPointer() : p.add(1)).readUtf8String(n) || "";
 }
 const imageSources = new Map();
+const fileSources = new Map();
+const fileThreads = new Map();
+const assignString = new NativeFunction(base.add(0x450fdb0), "pointer", ["pointer", "pointer"]);
+// Only substitute paths for an API-owned file operation on its native worker thread.
+Interceptor.attach(base.add(0x82e8c10), {
+  onEnter(args) {
+    this.thread = Process.getCurrentThreadId();
+    this.source = fileSources.get(readStdString(args[3]));
+    if (this.source) fileThreads.set(this.thread, this.source);
+  },
+  onLeave() {
+    if (this.source) fileThreads.delete(this.thread);
+  },
+});
+Interceptor.attach(base.add(0x73c7120), {
+  onEnter(args) {
+    this.source = this.returnAddress.equals(base.add(0x82e8cd4))
+      ? fileThreads.get(Process.getCurrentThreadId())
+      : undefined;
+    this.output = args[0];
+  },
+  onLeave() {
+    if (this.source) assignString(this.output, this.source.object);
+  },
+});
 // The JSON route accepts an HTTP prefix, but its core sender requires a local filename.
 // Substitute only our retained, API-owned source on the native worker thread.
 Interceptor.attach(base.add(0x82e7ee0), {
@@ -608,12 +635,39 @@ function outboundCall(payload, queued = false) {
 }
 
 rpc.exports = {
+  sendfile(chat, path, name) {
+    if (
+      typeof chat !== "string" ||
+      !chat ||
+      typeof path !== "string" ||
+      !/^\/home\/wechat\/\.cache\/wechatlinux\/uploads\/[a-f0-9-]{36}\/[^/\\\x00-\x1f]{1,200}$/.test(
+        path,
+      ) ||
+      typeof name !== "string" ||
+      path.split("/").pop() !== name
+    )
+      throw Error("Invalid file upload");
+    const marker = "http://127.0.0.1:18742/native-file/" + path.split("/").at(-2);
+    const escape = (value) =>
+      value.replace(
+        /[&<>"']/g,
+        (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[c],
+      );
+    fileSources.set(marker, stdString(path));
+    const xml = `<msg><appmsg><title>${escape(name)}</title><type>6</type><appattach><cdnattachurl>${marker}</cdnattachurl><aeskey>${"0".repeat(32)}</aeskey></appattach></appmsg></msg>`;
+    return outboundCall(
+      JSON.stringify({ chat_id: chat, message_type: 49, content_xml: xml }),
+      true,
+    ).finally(() => fileSources.delete(marker));
+  },
   sendimage(chat, path) {
     if (
       typeof chat !== "string" ||
       !chat ||
       typeof path !== "string" ||
-      !/^\/home\/wechat\/\.cache\/wechatlinux\/uploads\/[a-f0-9-]{36}\.(png|jpg)$/.test(path)
+      !/^\/home\/wechat\/\.cache\/wechatlinux\/uploads\/[a-f0-9-]{36}\.(png|jpg|gif|webp)$/.test(
+        path,
+      )
     )
       throw Error("Invalid image upload");
     const marker = "http://127.0.0.1:18742/native-upload/" + path.split("/").pop();
