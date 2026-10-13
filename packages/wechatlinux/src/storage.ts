@@ -351,9 +351,20 @@ export class Storage {
           projection += ",wcdb_decompress(message_content,WCDB_CT_message_content) AS __decoded";
         if (c.includes("WCDB_CT_source"))
           projection += ",wcdb_decompress(source,WCDB_CT_source) AS __source";
-        for (const row of await this.query(d, "SELECT " + projection + " FROM " + identifier(t))) {
-          const [key, message] = this.normalize(d, t, row, names, chat);
-          out.set(key, message);
+        let after = "0";
+        while (true) {
+          const page = await this.query(
+            d,
+            `SELECT ${projection},CAST(local_id AS TEXT) AS __scan_local FROM ${identifier(t)} WHERE local_id>${literal(after)} ORDER BY local_id ASC LIMIT 500`,
+            500,
+          );
+          for (const row of page) {
+            after = String(row.__scan_local);
+            delete row.__scan_local;
+            const [key, message] = this.normalize(d, t, row, names, chat);
+            out.set(key, message);
+          }
+          if (page.length < 500) break;
         }
       }
     }
@@ -622,11 +633,29 @@ export class Storage {
     for (const d of await this.databases()) {
       if (basename(d.path) !== "general.db" || !(await this.tables(d)).has("revokemessage"))
         continue;
-      for (const r of await this.query(d, "SELECT * FROM revokemessage"))
-        if (r.to_user_name && r.svr_id && r.svr_id !== "0")
-          out.set(JSON.stringify([r.to_user_name, r.svr_id, r.revoke_time]), r);
+      let after = "0";
+      while (true) {
+        const page = await this.query(
+          d,
+          `SELECT *,CAST(rowid AS TEXT) AS __scan_row FROM revokemessage WHERE rowid>${literal(after)} ORDER BY rowid LIMIT 500`,
+          500,
+        );
+        for (const r of page) {
+          after = String(r.__scan_row);
+          delete r.__scan_row;
+          if (r.to_user_name && r.svr_id && String(r.svr_id) !== "0")
+            out.set(JSON.stringify([r.to_user_name, r.svr_id, r.revoke_time]), r);
+        }
+        if (page.length < 500) break;
+      }
     }
     return out;
+  }
+  async bridgeRevocations() {
+    return [...(await this.revoked()).values()].map((row) => ({
+      chat: String(row.to_user_name),
+      id: String(row.svr_id),
+    }));
   }
   async changes(): Promise<Event[]> {
     const { messages: now, paths } = await this.messages(),
