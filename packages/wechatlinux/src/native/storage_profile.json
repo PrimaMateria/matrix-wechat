@@ -145,10 +145,7 @@
     "argument_count": 2,
     "sqlite_encoding_flags": 2049,
     "user_data": null,
-    "arguments": [
-      "stored column value",
-      "paired WCDB_CT_ column encoding integer"
-    ],
+    "arguments": ["stored column value", "paired WCDB_CT_ column encoding integer"],
     "registration_evidence": [
       "0x87c3629 callback reference",
       "0x87c363f nArg=2",

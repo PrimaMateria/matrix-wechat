@@ -6,18 +6,24 @@
     "start": "bun src/server.ts",
     "build": "bun src/build.ts",
     "check": "tsc --noEmit",
-    "test": "bun test tests"
+    "test": "bun test tests",
+    "lint": "biome check src tests biome.json package.json tsconfig.json",
+    "format": "biome check --write src tests biome.json package.json tsconfig.json"
   },
-  "trustedDependencies": ["frida"],
+  "trustedDependencies": [
+    "frida"
+  ],
   "dependencies": {
     "@zxing/library": "^0.23.0",
     "fast-xml-parser": "^5.11.2",
     "frida": "17.23.3",
     "pngjs": "^7.0.0",
     "react": "^19.3.0",
-    "react-dom": "^19.3.0"
+    "react-dom": "^19.3.0",
+    "silk-wasm": "^3.7.1"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.15",
     "@types/bun": "^1.4.3",
     "@types/frida-gum": "^19.12.0",
     "@types/pngjs": "^6.0.5",

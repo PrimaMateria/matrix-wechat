@@ -33,40 +33,27 @@
   "objects": {
     "login_view_model_vtable_rva": "0xa6f0ac8",
     "login_window_to_model_offset": 632,
-    "switch_account_widget_offsets": [
-      1664,
-      1672
-    ],
+    "switch_account_widget_offsets": [1664, 1672],
     "login_window_vtable_rva": "0xa6f0b50"
   },
   "signatures": {
     "switch_account_and_request_qrcode": {
       "return": "void",
-      "arguments": [
-        "pointer"
-      ],
+      "arguments": ["pointer"],
       "thread": "Qt GUI owner thread"
     },
     "switch_account": {
       "return": "void",
-      "arguments": [
-        "pointer"
-      ],
+      "arguments": ["pointer"],
       "thread": "Qt GUI owner thread"
     }
   },
   "evidence": {
     "type": "static_native_UI_signal_slot_wiring",
     "window_connection_function": "0x48605a0",
-    "connection_instruction_addresses": [
-      "0x486089e",
-      "0x486090e"
-    ],
+    "connection_instruction_addresses": ["0x486089e", "0x486090e"],
     "clicked_signal_rva": "0x5e80200",
-    "slot_callbacks": [
-      "0x4874550",
-      "0x4874580"
-    ],
+    "slot_callbacks": ["0x4874550", "0x4874580"],
     "slot_target": "0x4884710",
     "switch_action_literal": "0x48845fd materializes switch_account telemetry string and0x4884662 calls4884710"
   },
@@ -90,12 +77,7 @@
     "context": "LoginWindow = LoginViewModel - 0x278",
     "slot_callback_rva": "0x4874550",
     "qt_single_shot_impl_rva": "0xa50af00",
-    "arguments": [
-      0,
-      0,
-      "LoginWindow",
-      "native Qt slot object"
-    ],
+    "arguments": [0, 0, "LoginWindow", "native Qt slot object"],
     "allocation": "operator new RVA0xa674ee0; original slot destructor frees with operator delete RVA0x450c140",
     "evidence": "a50af00 ms0/non-null context branch invokes a4f0070 with Qt::QueuedConnection=2",
     "runtime_verified": false
