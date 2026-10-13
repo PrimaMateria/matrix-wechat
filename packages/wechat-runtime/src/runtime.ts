@@ -561,8 +561,8 @@ export class Runtime {
         let response;
         if (message.reply_to !== undefined) {
           const quoted = await this.store.message(message.chat_id, message.reply_to);
-          if (quoted.kind === "system" || quoted.read_only)
-            throw new APIError("invalid_params", "Read-only messages cannot be quoted");
+          if (quoted.kind === "system")
+            throw new APIError("invalid_params", "System messages cannot be quoted");
           const contacts = await this.store.contacts();
           response = await this.native("sendreply", message.chat_id, message.text, {
             id: quoted.id,

@@ -1,9 +1,12 @@
 FROM docker.io/oven/bun:1.3.14 AS client
-# Download the validated release asset with retries; the native profile owns the hash pin.
+# Keep the large, read-only client independent of application source and dependencies.
+RUN apt-get update && apt-get install -y --no-install-recommends squashfs-tools \
+    && rm -rf /var/lib/apt/lists/*
 ARG WECHAT_APPIMAGE_URL=https://github.com/yamada-sexta/matrix-wechat/releases/download/wechat-client-4.1.13-4526180b/WeChatLinux_x86_64.AppImage
 COPY packages/wechat-runtime/scripts/download-client.ts /tmp/download-client.ts
 COPY packages/wechat-runtime/src/native/storage_profile.toml /tmp/storage_profile.toml
-RUN bun /tmp/download-client.ts "$WECHAT_APPIMAGE_URL" /opt/wechat-client/WeChatLinux_x86_64.AppImage /tmp/storage_profile.toml
+RUN bun /tmp/download-client.ts "$WECHAT_APPIMAGE_URL" /opt/wechat-client/WeChatLinux_x86_64.AppImage /tmp/storage_profile.toml /opt/wechat-client/app \
+    && chmod -R a+rX,a-w /opt/wechat-client
 
 FROM docker.io/oven/bun:1.3.14 AS build
 WORKDIR /opt/matrix-wechat
@@ -34,14 +37,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxi6 libxkbcommon0 libxkbcommon-x11-0 libxrandr2 libxrender1 libxtst6 \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /opt/matrix-wechat/packages/wechat-runtime
-COPY --from=build /opt/matrix-wechat /opt/matrix-wechat
-COPY --from=client /opt/wechat-client/WeChatLinux_x86_64.AppImage /opt/wechat-client/WeChatLinux_x86_64.AppImage
+COPY --from=client /opt/wechat-client /opt/wechat-client
 ENV WECHAT_INSTALL_DIR=/opt/wechat-client/app
-# Extract and verify both hashes during build, without starting WeChat.
-RUN bun -e 'import {Runtime} from "./src/runtime.ts";console.log(await new Runtime().executable())' \
-    && chmod -R a+rX,a-w /opt/wechat-client
 RUN usermod --home /home/wechat --move-home bun \
     && mkdir -p /tmp/runtime-wechat && chown bun:bun /tmp/runtime-wechat && chmod 0700 /tmp/runtime-wechat
+COPY --from=build /opt/matrix-wechat /opt/matrix-wechat
+# Verify the prepared client through the application without starting WeChat.
+RUN bun -e 'import {Runtime} from "./src/runtime.ts";console.log(await new Runtime().executable())'
 ENV HOME=/home/wechat XDG_RUNTIME_DIR=/tmp/runtime-wechat
 USER bun
 EXPOSE 18742 18743

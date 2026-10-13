@@ -264,6 +264,7 @@ async function main() {
     ? Bun.serve({
         hostname: "0.0.0.0",
         port: 18743,
+        idleTimeout: 0,
         // Native upload validation owns attachment size restrictions.
         maxRequestBodySize: 64 * 1024 * 1024 + 16384,
         fetch: createRPCHandler(runtime, process.env.WECHAT_API_TOKEN),

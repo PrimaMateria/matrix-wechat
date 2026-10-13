@@ -538,7 +538,7 @@ function App() {
                     )}
                   </div>
                   {m.mentions?.length && <small>{m.mentions.map(name).join(", ")}</small>}
-                  {m.kind !== "system" && !m.read_only && /^\d+$/.test(m.id) && (
+                  {m.kind !== "system" && /^[1-9]\d*$/.test(m.id) && (
                     <button
                       className="replyButton"
                       type="button"
