@@ -162,9 +162,9 @@ nav {
 .message {
   position: relative;
   width: fit-content;
-  max-width: 85%;
+  max-width: calc(85% - 40px);
   padding: 10px 13px;
-  margin: 0 0 12px;
+  margin: 0 0 12px 40px;
   border: 1px solid #dce5df;
   border-radius: 10px;
   background: white;
@@ -173,6 +173,7 @@ nav {
 }
 .message.own {
   margin-left: auto;
+  margin-right: 40px;
   background: #ddf3df;
 }
 .meta {
@@ -195,12 +196,24 @@ blockquote {
   font-size: 12px;
 }
 .replyButton {
+  width: 56px;
+  white-space: nowrap;
+  overflow-wrap: normal;
   position: absolute;
   top: 50%;
   left: calc(100% + 8px);
   transform: translateY(-50%);
   padding: 4px 7px;
   font-size: 12px;
+}
+.bubbleAvatar {
+  position: absolute;
+  left: -40px;
+  top: 2px;
+}
+.message.own .bubbleAvatar {
+  left: auto;
+  right: -40px;
 }
 .message.own .replyButton {
   left: auto;

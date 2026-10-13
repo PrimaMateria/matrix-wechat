@@ -167,6 +167,14 @@ for (const name of ["prepare_v2", "prepare_v3"])
       try {
         sql = text(a[1]);
       } catch (_) {}
+      if (traceSends && sendTraces.length < 64 && /^\s*(INSERT|REPLACE)\b[\s\S]*\bMsg_/i.test(sql))
+        sendTraces.push({
+          entry: "database_message_insert",
+          sql: sql.slice(0, 200),
+          callers: Thread.backtrace(this.context, Backtracer.ACCURATE).map((p) =>
+            p.sub(base).toString(),
+          ),
+        });
       this.transactionEnd = /^\s*(COMMIT|END|ROLLBACK)\b/i.test(sql);
       this.cipher = sql.match(
         /^\s*PRAGMA\s+(cipher_[a-z_]+|kdf_iter|fast_kdf_iter)\s*=\s*([a-zA-Z0-9_'"-]+)\s*;?\s*$/i,
@@ -496,6 +504,44 @@ function readStdString(p) {
   return (long ? p.add(16).readPointer() : p.add(1)).readUtf8String(n) || "";
 }
 const imageSources = new Map();
+let traceSends = false;
+const sendTraces = [];
+for (const [address, argument] of [
+  [0x64ccca0, 2],
+  [0x82e61c0, 1],
+])
+  Interceptor.attach(base.add(address), {
+    onEnter(args) {
+      if (!traceSends || sendTraces.length >= 16) return;
+      try {
+        const message = args[argument].readPointer();
+        const strings = [];
+        for (let offset = 0; offset < 512; offset += 8) {
+          try {
+            const field = message.add(offset),
+              long = (field.readU8() & 1) !== 0;
+            const length = long ? field.add(8).readU64().toNumber() : field.readU8() >>> 1;
+            const capacity = long ? field.readU64().toNumber() - 1 : 23;
+            if (length > 0 && length <= 8192 && length < capacity && capacity <= 262144)
+              strings.push({ offset, value: readStdString(field) });
+          } catch {}
+        }
+        sendTraces.push({
+          entry: address.toString(16),
+          vtable: message.readPointer().sub(base).toString(),
+          bytes: Array.from(new Uint8Array(message.readByteArray(512)))
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join(""),
+          strings,
+          callers: Thread.backtrace(this.context, Backtracer.ACCURATE).map((p) =>
+            p.sub(base).toString(),
+          ),
+        });
+      } catch (error) {
+        sendTraces.push({ error: String(error) });
+      }
+    },
+  });
 const fileSources = new Map();
 const fileThreads = new Map();
 const assignString = new NativeFunction(base.add(0x450fdb0), "pointer", ["pointer", "pointer"]);
@@ -634,20 +680,152 @@ function outboundCall(payload, queued = false) {
   });
 }
 
+// Reproduce the captured desktop Quote workflow, on the account thread.
+// The quote factory copies a native message record and its display information.
+function nativeQuote(chat, content, reference) {
+  return new Promise((resolve, reject) => {
+    if (outboundQueue.length >= 16) return reject(Error("Send queue full"));
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      cancelled = true;
+      reject(Error("Native account thread did not accept the quote"));
+    }, 30000);
+    outboundQueue.push(() => {
+      if (cancelled) return;
+      clearTimeout(timer);
+      const holders = [],
+        result = Memory.alloc(64);
+      const record = Memory.alloc(0x350),
+        extra = Memory.alloc(0x50);
+      let initializedRecord = false,
+        initializedExtra = false;
+      let stage = "context";
+      result.writeByteArray(new Uint8Array(64));
+      const shared = (rva, parent) => {
+        const holder = Memory.alloc(16);
+        holder.writeByteArray(new Uint8Array(16));
+        holders.push(holder);
+        if (parent)
+          new NativeFunction(base.add(rva), "pointer", ["pointer", "pointer"])(holder, parent);
+        else new NativeFunction(base.add(rva), "pointer", ["pointer"])(holder);
+        return holder;
+      };
+      try {
+        const context = shared(0x60421e0),
+          root = shared(0x619ce90, context.readPointer());
+        const manager = shared(0x61ad930, root.readPointer());
+        stage = "record";
+        record.writeByteArray(new Uint8Array(0x350));
+        new NativeFunction(base.add(0x6197440), "void", ["pointer"])(record);
+        initializedRecord = true;
+        const setString = (target, value) => assignString(target, stdString(value).object);
+        record.add(8).writeU64(new UInt64(String(reference.type)));
+        setString(record.add(0x10), reference.sender);
+        setString(record.add(0x28), chat);
+        setString(record.add(0x40), reference.sender);
+        setString(record.add(0x58), chat);
+        record.add(0x90).writeU64(new UInt64(reference.id));
+        record.add(0xa0).writeU64(new UInt64(String(reference.timestamp)));
+        record.add(0xa8).writeU32(Math.floor(reference.timestamp / 1000));
+        record.add(0xac).writeU32(2);
+        setString(record.add(0xb8), reference.content);
+        setString(record.add(0x248), reference.name);
+        extra.writeByteArray(new Uint8Array(0x50));
+        new NativeFunction(base.add(0x61124e0), "void", ["pointer"])(extra);
+        initializedExtra = true;
+        setString(extra, reference.sender);
+        setString(extra.add(0x18), reference.name);
+        extra.add(0x30).writeU64(new UInt64(reference.id));
+        setString(extra.add(0x38), reference.content);
+        stage = "quote factory";
+        const source = Memory.alloc(16);
+        source.writeByteArray(new Uint8Array(16));
+        holders.push(source);
+        const text = stdString(content);
+        new NativeFunction(base.add(0x738fec0), "pointer", [
+          "pointer",
+          "pointer",
+          "pointer",
+          "pointer",
+        ])(source, record, text.object, extra);
+        const message = source.readPointer();
+        if (!message.readPointer().equals(base.add(0xa8a10c8)))
+          throw Error("Unsupported quote source");
+        const recipient = stdString(chat);
+        assignString(message.add(0x90), recipient.object);
+        assignString(message.add(0x190), recipient.object);
+        message.add(0x1a8).writeU32(Math.floor(reference.timestamp / 1000));
+        message.add(0x1ac).writeU32(reference.local_id);
+        message.add(0x1b0).writeU64(new UInt64(String(reference.timestamp)));
+        const vector = Memory.alloc(24);
+        vector.writePointer(source);
+        vector.add(8).writePointer(source.add(16));
+        vector.add(16).writePointer(source.add(16));
+        stage = "send handler";
+        new NativeFunction(
+          base.add(0x64da920),
+          "pointer",
+          ["pointer", "pointer", "pointer", "int"],
+          { exceptions: "steal" },
+        )(result, manager.readPointer(), vector, 1);
+        resolve({ success: result.readU8() !== 0, error_message: readStdString(result.add(8)) });
+      } catch (error) {
+        const nativeDetails = {};
+        for (const name of Object.getOwnPropertyNames(error))
+          if (!["stack", "message"].includes(name)) nativeDetails[name] = String(error[name]);
+        if (error.context) {
+          nativeDetails.pc = error.context.pc.sub(base).toString();
+          nativeDetails.frames = Thread.backtrace(error.context, Backtracer.ACCURATE)
+            .map((address) => address.sub(base).toString())
+            .join(",");
+        }
+        reject(
+          Error("Quote " + stage + ": " + String(error) + " " + JSON.stringify(nativeDetails)),
+        );
+      } finally {
+        new NativeFunction(base.add(0x64d6d30), "void", ["pointer"])(result);
+        const release = new NativeFunction(base.add(0x470a2e0), "void", ["pointer"]);
+        for (const holder of holders.reverse()) release(holder);
+        if (initializedExtra) new NativeFunction(base.add(0x6112500), "void", ["pointer"])(extra);
+        if (initializedRecord) new NativeFunction(base.add(0x472f190), "void", ["pointer"])(record);
+      }
+    });
+  });
+}
+
 rpc.exports = {
-  sendreply(chat, xml) {
+  traces(enabled, clear) {
+    traceSends = enabled === true;
+    if (clear) sendTraces.length = 0;
+    return { enabled: traceSends, traces: sendTraces.slice() };
+  },
+  sendreply(chat, content, reference) {
     if (
       typeof chat !== "string" ||
       !chat ||
-      typeof xml !== "string" ||
-      xml.length > 262144 ||
-      !xml.includes("<type>57</type>")
+      typeof content !== "string" ||
+      !content ||
+      content.length > 65536 ||
+      !reference ||
+      typeof reference !== "object" ||
+      typeof reference.id !== "string" ||
+      !/^\d{1,20}$/.test(reference.id) ||
+      reference.id === "0" ||
+      !Number.isSafeInteger(reference.local_id) ||
+      reference.local_id < 1 ||
+      reference.local_id > 0xffffffff ||
+      typeof reference.content !== "string" ||
+      reference.content.length > 262144 ||
+      typeof reference.sender !== "string" ||
+      !reference.sender ||
+      typeof reference.name !== "string" ||
+      !Number.isSafeInteger(reference.type) ||
+      reference.type < 1 ||
+      !Number.isSafeInteger(reference.timestamp) ||
+      reference.timestamp < 0
     )
       throw Error("Invalid quoted reply");
-    return outboundCall(
-      JSON.stringify({ chat_id: chat, message_type: 49, content_xml: xml }),
-      true,
-    );
+    return nativeQuote(chat, content, reference);
   },
   sendfile(chat, path, name) {
     if (

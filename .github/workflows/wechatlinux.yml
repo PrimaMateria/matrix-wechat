@@ -1,0 +1,28 @@
+name: WeChat Linux runtime
+on:
+  push:
+    paths: ['packages/wechatlinux/**', '.github/workflows/wechatlinux.yml']
+  pull_request:
+    paths: ['packages/wechatlinux/**', '.github/workflows/wechatlinux.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  container:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Build pinned client and Bun API
+        run: docker build --platform linux/amd64 -t wechatlinux:test packages/wechatlinux
+      - name: Verify bundled client without launching WeChat
+        run: |
+          docker run --rm --network none --entrypoint bun wechatlinux:test -e '
+            import {Runtime} from "/opt/wechatlinux/src/runtime.ts";
+            const executable = await new Runtime().executable();
+            if (!executable.startsWith("/opt/wechat-client/app/")) throw Error("Client is not bundled");
+            if (Bun.spawnSync(["test", "-w", executable]).exitCode === 0) throw Error("Client is writable");
+            console.log("Pinned, read-only client verified");
+          '

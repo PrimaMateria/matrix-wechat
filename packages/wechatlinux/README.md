@@ -4,12 +4,14 @@ Container-only WeChat Linux 4.1.13 instrumentation, Bun + TypeScript API, and Re
 
 ```sh
 packages/wechatlinux/scripts/container.sh build
-packages/wechatlinux/scripts/container.sh --appimage /path/to/WeChatLinux_x86_64.AppImage start
+packages/wechatlinux/scripts/container.sh start
 ```
 
 Open http://127.0.0.1:18742/. The service resumes the client's saved account automatically. WeChat may require confirmation on the phone. Without a saved account, the page displays the client's QR code.
 
-The Dockerfile installs Bun and locked dependencies and builds the native hook and React UI. Application source is baked into the image. Writable account state is mounted from repository `data/wechat` to container `/home/wechat`. The launcher publishes only `127.0.0.1:18742`, uses private PID/display namespaces, and grants `SYS_PTRACE` for Frida plus `SYS_CHROOT` for the embedded browser sandbox. No host home, display, or IPC is mounted. Server startup rejects host execution.
+The Dockerfile downloads the AppImage from Tencent, checks its pinned SHA-256, copies it into the runtime image, and extracts and verifies the executable during build. The expected AppImage hash is `4526180bca980128791599af122ff4795002a5715a510f6a65480e2be6874244`. A changed download fails the build. Both hashes are checked again before startup. The client installation is read-only to the runtime user; the image contains no account data.
+
+The build runs lint, type checking and tests, then builds the native hook and React UI with locked Bun dependencies. CI builds the same amd64 Dockerfile and checks the bundled client without launching WeChat. Writable account state is mounted from repository `data/wechat` to container `/home/wechat`. The launcher publishes only `127.0.0.1:18742`, uses private PID/display namespaces, and grants `SYS_PTRACE` for Frida plus `SYS_CHROOT` for the embedded browser sandbox. No host home, display, or IPC is mounted. Server startup rejects host execution.
 
 ```sh
 packages/wechatlinux/scripts/container.sh stop

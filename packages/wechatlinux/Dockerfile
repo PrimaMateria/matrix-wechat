@@ -1,3 +1,7 @@
+FROM docker.io/oven/bun:1.3.14 AS client
+# The vendor's mutable download URL must still match the reverse-engineered build.
+ADD --checksum=sha256:4526180bca980128791599af122ff4795002a5715a510f6a65480e2be6874244 https://dldir1v6.qq.com/weixin/Universal/Linux/WeChatLinux_x86_64.AppImage /opt/wechat-client/WeChatLinux_x86_64.AppImage
+
 FROM docker.io/oven/bun:1.3.14 AS build
 WORKDIR /opt/wechatlinux
 # Frida's npm install script invokes `node`; Bun provides that executable here.
@@ -7,7 +11,8 @@ RUN bun install --frozen-lockfile
 RUN bun -e 'const f=await import("frida");await f.getLocalDevice();console.log("Frida binding works under Bun")'
 COPY tsconfig.json biome.json .gitignore ./
 COPY src ./src
-RUN bunx biome check src biome.json package.json tsconfig.json && bun run check && bun run build
+COPY tests ./tests
+RUN bun run lint && bun run check && bun run test && bun run build
 
 FROM docker.io/oven/bun:1.3.14 AS runtime
 USER root
@@ -25,6 +30,11 @@ COPY --from=build /opt/wechatlinux/package.json /opt/wechatlinux/bun.lock ./
 COPY --from=build /opt/wechatlinux/node_modules ./node_modules
 COPY --from=build /opt/wechatlinux/src ./src
 COPY --from=build /opt/wechatlinux/dist ./dist
+COPY --from=client /opt/wechat-client/WeChatLinux_x86_64.AppImage /opt/wechat-client/WeChatLinux_x86_64.AppImage
+ENV WECHAT_INSTALL_DIR=/opt/wechat-client/app
+# Extract and verify both hashes during build, without starting WeChat.
+RUN bun -e 'import {Runtime} from "./src/runtime.ts";console.log(await new Runtime().executable())' \
+    && chmod -R a+rX,a-w /opt/wechat-client
 RUN usermod --home /home/wechat --move-home bun \
     && mkdir -p /tmp/runtime-wechat && chown bun:bun /tmp/runtime-wechat && chmod 0700 /tmp/runtime-wechat
 ENV HOME=/home/wechat XDG_RUNTIME_DIR=/tmp/runtime-wechat

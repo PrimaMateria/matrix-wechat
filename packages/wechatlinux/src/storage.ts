@@ -266,7 +266,20 @@ export class Storage {
           m.quote = {
             sender_id: String(app.refermsg.fromusr || ""),
             sender_name: String(app.refermsg.displayname || ""),
-            text: String(app.refermsg.content || ""),
+            text:
+              Number(app.refermsg.type) === 1
+                ? String(app.refermsg.content || "")
+                : Number(app.refermsg.type) === 49
+                  ? String(xml(app.refermsg.content)?.msg?.appmsg?.title || "[Message]")
+                  : (
+                      {
+                        3: "[Image]",
+                        34: "[Audio]",
+                        43: "[Video]",
+                        47: "[Sticker]",
+                        48: "[Location]",
+                      } as Record<number, string>
+                    )[Number(app.refermsg.type)] || "[Message]",
             type: Number(app.refermsg.type) || 0,
           };
       }

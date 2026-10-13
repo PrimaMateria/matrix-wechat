@@ -6,16 +6,15 @@ package_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
 repo_dir=$(CDPATH= cd -- "$script_dir/../../.." && pwd)
 data_dir="$repo_dir/data/wechat"
 engine="${WECHATLINUX_ENGINE:-podman}"
-appimage=""
 container_name=wechatlinux-demo
 image_name=localhost/wechatlinux-demo:dev
 
 usage() {
     cat <<'EOF'
-Usage: container.sh [--engine podman|docker] [--appimage PATH] COMMAND [args]
+Usage: container.sh [--engine podman|docker] COMMAND [args]
 
   build        Build the web/helper runtime image (never starts WeChat)
-  start        Copy the AppImage if supplied, then start the isolated container
+  start        Start the isolated container with its bundled WeChat client
   stop         Stop the container; preserve all data/wechat files
   status       Show container state
   logs         Show container logs; extra engine log flags are accepted
@@ -28,10 +27,10 @@ EOF
 
 while (($#)); do
     case "$1" in
-        --engine|--appimage)
+        --engine)
             option="$1"
             if (($# < 2)); then printf '%s needs a value\n' "$option" >&2; exit 2; fi
-            if [[ "$option" == --engine ]]; then engine="$2"; else appimage="$2"; fi
+            engine="$2"
             shift 2
             ;;
         -h|--help) usage; exit 0 ;;
@@ -57,25 +56,12 @@ case "$command" in
     start)
         if (($#)); then printf 'start takes no arguments\n' >&2; exit 2; fi
         if running; then
-            if [[ -n "$appimage" ]]; then printf 'Stop the container before replacing its AppImage\n' >&2; exit 1; fi
             printf '%s is already running. QR: http://127.0.0.1:18742/\n' "$container_name"
             exit 0
         fi
         umask 077
         mkdir -p "$data_dir"
         chmod 0700 "$data_dir"
-        if [[ -n "$appimage" ]]; then
-            if [[ ! -f "$appimage" ]]; then printf 'AppImage does not exist: %s\n' "$appimage" >&2; exit 1; fi
-            staged="$data_dir/.appimage-copy.$$"
-            trap 'rm -f -- "${staged:-}"' EXIT
-            cp -- "$appimage" "$staged"
-            chmod 0600 "$staged"
-            mv -- "$staged" "$data_dir/WeChatLinux_x86_64.AppImage"
-        fi
-        if [[ ! -f "$data_dir/WeChatLinux_x86_64.AppImage" ]]; then
-            printf 'First start requires --appimage PATH\n' >&2
-            exit 1
-        fi
         if exists; then "$engine" rm "$container_name" >/dev/null; fi
         run_options=(--detach --name "$container_name" --cap-drop ALL --cap-add SYS_PTRACE --cap-add SYS_CHROOT
             --security-opt no-new-privileges --publish 127.0.0.1:18742:18742
@@ -87,22 +73,6 @@ case "$command" in
             fi
             run_options+=(--userns keep-id:uid=1000,gid=1000)
         fi
-        # Extract and verify inside a temporary container, without launching WeChat.
-        prepare_options=(--rm --cap-drop ALL --security-opt no-new-privileges
-            --volume "$data_dir:/home/wechat:Z" --entrypoint bun)
-        if [[ "$engine" == podman ]]; then prepare_options+=(--userns keep-id:uid=1000,gid=1000); fi
-        native_executable=$("$engine" run "${prepare_options[@]}" "$image_name" -e \
-            'import {Runtime} from "/opt/wechatlinux/src/runtime.ts";console.log(await new Runtime().executable())')
-        case "$native_executable" in
-            /home/wechat/.cache/wechatlinux/app-*/opt/wechat/wechat)
-                artifact_relative="${native_executable#/home/wechat/}"
-                artifact_relative="${artifact_relative%/opt/wechat/wechat}"
-                ;;
-            *) printf 'Unexpected prepared executable path\n' >&2; exit 1 ;;
-        esac
-        # Persistent account state is writable; the supplied app and installation are not.
-        run_options+=(--volume "$data_dir/WeChatLinux_x86_64.AppImage:/home/wechat/WeChatLinux_x86_64.AppImage:ro,Z"
-            --volume "$data_dir/$artifact_relative:/home/wechat/$artifact_relative:ro,Z")
         "$engine" run "${run_options[@]}" "$image_name"
         printf 'QR login page: http://127.0.0.1:18742/\n'
         ;;

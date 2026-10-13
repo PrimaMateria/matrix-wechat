@@ -26,7 +26,6 @@ import { voiceAudioProcess } from "./audio";
 import { imageType, stickerImage } from "./media";
 import outbound from "./native/outbound_profile.json";
 import profile from "./native/storage_profile.json";
-import { replyXML } from "./reply";
 import { Storage } from "./storage";
 import { APIError, type Database, type Event, type Row, type Status } from "./types";
 
@@ -259,9 +258,11 @@ export class Runtime {
     }
   }
   async executable() {
-    const image = process.env.WECHAT_APPIMAGE || "/home/wechat/WeChatLinux_x86_64.AppImage";
-    const imageHash = await sha(image),
-      extracted = join(data, "app-" + imageHash.slice(0, 16)),
+    const image = process.env.WECHAT_APPIMAGE || "/opt/wechat-client/WeChatLinux_x86_64.AppImage";
+    const imageHash = await sha(image);
+    if (imageHash !== profile.artifact.appimage_sha256)
+      throw new APIError("unsupported_build", "AppImage does not match the pinned SHA-256");
+    const extracted = process.env.WECHAT_INSTALL_DIR || join(data, "app-" + imageHash.slice(0, 16)),
       executable = join(extracted, "opt/wechat/wechat");
     if (!existsSync(executable)) {
       const handle = openSync(image, "r"),
@@ -351,7 +352,7 @@ export class Runtime {
           this.qrAt = 0;
           this.updateStatus({
             state:
-              !p.state.active || (p.state.phase === 4 && [3, 6].includes(p.state.request))
+              !p.state.active || (p.state.phase === 4 && p.state.request === 6)
                 ? "signing_in"
                 : [3, 4].includes(p.state.phase)
                   ? "awaiting_confirmation"
@@ -478,8 +479,7 @@ export class Runtime {
               }
               this.updateStatus({
                 state:
-                  !state.login?.active ||
-                  (state.login?.phase === 4 && [3, 6].includes(state.login?.request))
+                  !state.login?.active || (state.login?.phase === 4 && state.login?.request === 6)
                     ? "signing_in"
                     : [3, 4].includes(state.login?.phase)
                       ? "awaiting_confirmation"
@@ -503,6 +503,8 @@ export class Runtime {
     }
   }
   async dispatch(method: string, params: Row = {}) {
+    if (method === "send.inspect")
+      return this.operation(() => this.native("traces", params.enabled, params.clear));
     if (method === "status") return this.status;
     if (method === "login.inspect") return this.operation(() => this.native("status"));
     if (method === "capabilities")
@@ -561,14 +563,20 @@ export class Runtime {
           if (typeof params.reply_to !== "string" || !/^\d{1,20}$/.test(params.reply_to))
             throw new APIError("invalid_params", "A source message ID is required");
           const quoted = await this.store.message(params.chat_id, params.reply_to);
+          if (quoted.kind === "system")
+            throw new APIError("invalid_params", "System messages cannot be quoted");
           const contacts = await this.store.contacts();
-          const displayName =
-            contacts.contacts.find((c) => c.id === quoted.sender_id)?.name || quoted.sender_id;
-          response = await this.native(
-            "sendreply",
-            params.chat_id,
-            replyXML(params.text, quoted, displayName),
-          );
+          response = await this.native("sendreply", params.chat_id, params.text, {
+            id: quoted.id,
+            local_id: Number(quoted.native?.local_id),
+            type: Number(quoted.native?.row.local_type),
+            sender: quoted.sender_id,
+            name:
+              contacts.contacts.find((contact) => contact.id === quoted.sender_id)?.name ||
+              quoted.sender_id,
+            timestamp: Math.floor(quoted.timestamp * 1000),
+            content: quoted.native?.decoded_content || quoted.text || `[${quoted.kind}]`,
+          });
         } else response = await this.native("sendtext", params.chat_id, params.text);
         if (response.success !== true)
           throw new APIError(

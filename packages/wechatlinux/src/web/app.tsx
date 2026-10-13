@@ -399,8 +399,12 @@ function App() {
                   key={m.local_key || m.id}
                 >
                   {m.kind !== "system" && (
-                    <div className="meta">
+                    <div className="bubbleAvatar">
                       <Avatar id={m.sender_id} label={name(m.sender_id)} />
+                    </div>
+                  )}
+                  {m.kind !== "system" && (
+                    <div className="meta">
                       {m.own ? "You" : name(m.sender_id)} ·{" "}
                       {new Date(
                         m.timestamp < 1e12 ? m.timestamp * 1000 : m.timestamp,

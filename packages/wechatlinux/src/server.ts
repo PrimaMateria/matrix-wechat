@@ -1,7 +1,6 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { privateAPI } from "./private-api";
-import { Runtime } from "./runtime";
 import { APIError, type Event, publicFields, type Row, type Status } from "./types";
 export interface Backend {
   sendImage?(chat: string, bytes: Buffer): Promise<unknown>;
@@ -245,6 +244,7 @@ export function createHandler(backend: Backend, webRoot = join(import.meta.dir, 
   };
 }
 async function main() {
+  const { Runtime } = await import("./runtime");
   if (!existsSync("/run/.containerenv") && !existsSync("/.dockerenv"))
     throw new APIError(
       "container_required",

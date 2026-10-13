@@ -1,6 +1,7 @@
 {
   "schema_version": 1,
   "artifact": {
+    "appimage_sha256": "4526180bca980128791599af122ff4795002a5715a510f6a65480e2be6874244",
     "sha256": "2749535f299ba67feb8ef80cab898bb0531fa8f376b16f8a72db706811c84132",
     "build_id": "d62bde21b26c5928e7dea826271e21a542b755b5",
     "elf_type": "ET_DYN",
