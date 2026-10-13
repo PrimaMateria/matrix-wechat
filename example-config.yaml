@@ -13,7 +13,3 @@ bridge:
   command_prefix: '!wechat'
 database:
   path: /data/matrix-wechat.db
-network:
-  backend: native
-  # For development: backend: fake
-  fixture: /opt/matrix-wechat/fixtures/demo.json

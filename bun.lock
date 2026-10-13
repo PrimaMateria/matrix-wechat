@@ -8,6 +8,7 @@
     "packages/matrix-bridge": {
       "name": "matrix-wechat-bridge",
       "dependencies": {
+        "@vector-im/matrix-bot-sdk": "0.10.1-element.0",
         "matrix-appservice-bridge": "12.0.1",
         "zod": "^4.6.7",
       },

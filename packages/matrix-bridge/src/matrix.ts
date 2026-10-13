@@ -1,6 +1,7 @@
+import { setRequestFn } from "@vector-im/matrix-bot-sdk";
 import { AppServiceRegistration, Bridge, Logger } from "matrix-appservice-bridge";
-import type { Asset } from "./backend";
 import type { Config } from "./config";
+import type { Asset } from "./messages";
 import { hash, type MatrixEvent } from "./store";
 
 export interface MatrixTransport {
@@ -9,7 +10,14 @@ export interface MatrixTransport {
   profile(mxid: string, name: string, avatar?: string): Promise<void>;
   membership(room: string, mxid: string, join: boolean): Promise<void>;
   metadata(room: string, name: string, topic: string, avatar?: string): Promise<void>;
-  send(sender: string, room: string, type: string, content: Record<string, any>, transaction: string, timestamp?: number): Promise<string>;
+  send(
+    sender: string,
+    room: string,
+    type: string,
+    content: Record<string, any>,
+    transaction: string,
+    timestamp?: number,
+  ): Promise<string>;
   redact(room: string, event: string, transaction: string): Promise<void>;
   upload(asset: Asset): Promise<string>;
   download(url: string, limit: number): Promise<Asset>;
@@ -18,38 +26,102 @@ export interface MatrixTransport {
 export class Matrix implements MatrixTransport {
   readonly sdk: Bridge;
   readonly bot: string;
-  constructor(readonly config: Config, readonly registration: AppServiceRegistration, accept: (event: MatrixEvent) => void, queryGhost: (mxid: string) => boolean) {
+  constructor(
+    readonly config: Config,
+    readonly registration: AppServiceRegistration,
+    accept: (event: MatrixEvent) => void,
+    queryGhost: (mxid: string) => boolean,
+  ) {
+    // Keep the SDK's intents and APIs, with Bun's HTTP implementation. Bun 1.3's
+    // undici shim lacks the BodyReadable.bytes() required by this SDK release.
+    setRequestFn(
+      async (
+        url: URL,
+        options: {
+          method: string;
+          headers: Record<string, string>;
+          body?: BodyInit;
+          headersTimeout?: number;
+          bodyTimeout?: number;
+        },
+      ) => {
+        const response = await fetch(url, {
+          method: options.method,
+          headers: options.headers,
+          body: options.body,
+          redirect: "error",
+          signal: AbortSignal.timeout(options.bodyTimeout || options.headersTimeout || 60000),
+        });
+        return {
+          statusCode: response.status,
+          headers: Object.fromEntries(response.headers),
+          body: { bytes: () => response.bytes() },
+        };
+      },
+    );
     this.bot = `@${config.appservice.bot_username}:${config.homeserver.domain}`;
     Logger.configure({ console: "warn" });
     this.sdk = new Bridge({
-      homeserverUrl: config.homeserver.address, domain: config.homeserver.domain, registration,
-      disableStores: true, disableContext: true, suppressEcho: true,
-      intentOptions: { bot: { enablePresence: false }, clients: { enablePresence: false } }, queue: { type: "per_room", perRequest: true },
+      homeserverUrl: config.homeserver.address,
+      domain: config.homeserver.domain,
+      registration,
+      disableStores: true,
+      disableContext: true,
+      suppressEcho: true,
+      intentOptions: { bot: { enablePresence: false }, clients: { enablePresence: false } },
+      queue: { type: "per_room", perRequest: true },
       controller: {
-        onUserQuery: (user) => queryGhost(user.getId()) ? {} : null,
+        onUserQuery: (user) => (queryGhost(user.getId()) ? {} : null),
         onEvent: (request) => {
           try {
             // This is synchronous: the event is persisted before the SDK acknowledges it.
             accept(request.getData() as MatrixEvent);
             request.resolve(undefined);
-          } catch (error) { request.reject(error); throw error; }
+          } catch (error) {
+            request.reject(error);
+            throw error;
+          }
         },
       },
     });
   }
-  async start() { await this.sdk.run(this.config.appservice.port, undefined, this.config.appservice.hostname); }
-  async close() { await this.sdk.close(); }
+  async start() {
+    await this.sdk.run(this.config.appservice.port, undefined, this.config.appservice.hostname);
+  }
+  async close() {
+    await this.sdk.close();
+  }
   async createRoom(key: string, name: string, owner: string, direct: boolean) {
     const aliasLocalpart = `wechat_room_${hash(key)}`;
     const bot = this.sdk.getIntent();
     await bot.ensureRegistered();
-    try { return await bot.matrixClient.resolveRoom(`#${aliasLocalpart}:${this.config.homeserver.domain}`); }
-    catch (error: any) { if (error.errcode !== "M_NOT_FOUND") throw error; }
     try {
-      return (await bot.createRoom({ options: {
-        room_alias_name: aliasLocalpart, name, visibility: "private", preset: "private_chat", invite: [owner], is_direct: direct,
-        initial_state: [{ type: "m.room.history_visibility", state_key: "", content: { history_visibility: "shared" } }],
-      } })).room_id;
+      return await bot.matrixClient.resolveRoom(
+        `#${aliasLocalpart}:${this.config.homeserver.domain}`,
+      );
+    } catch (error: any) {
+      if (error.errcode !== "M_NOT_FOUND") throw error;
+    }
+    try {
+      return (
+        await bot.createRoom({
+          options: {
+            room_alias_name: aliasLocalpart,
+            name,
+            visibility: "private",
+            preset: "private_chat",
+            invite: [owner],
+            is_direct: direct,
+            initial_state: [
+              {
+                type: "m.room.history_visibility",
+                state_key: "",
+                content: { history_visibility: "shared" },
+              },
+            ],
+          },
+        })
+      ).room_id;
     } catch (error: any) {
       if (error.errcode !== "M_ROOM_IN_USE") throw error;
       return bot.matrixClient.resolveRoom(`#${aliasLocalpart}:${this.config.homeserver.domain}`);
@@ -63,12 +135,27 @@ export class Matrix implements MatrixTransport {
   }
   async membership(room: string, mxid: string, join: boolean) {
     const intent = this.sdk.getIntent(mxid);
-    if (!join) { await intent.leave(room); return; }
+    if (!join) {
+      await intent.leave(room);
+      return;
+    }
     await intent.ensureRegistered();
-    if (mxid === this.bot) { await intent.join(room); return; }
+    if (mxid === this.bot) {
+      await intent.join(room);
+      return;
+    }
     try {
-      if ((await this.sdk.getIntent().matrixClient.getRoomStateEventContent(room, "m.room.member", mxid)).membership === "join") return;
-    } catch (error: any) { if (error.errcode !== "M_NOT_FOUND") throw error; }
+      if (
+        (
+          await this.sdk
+            .getIntent()
+            .matrixClient.getRoomStateEventContent(room, "m.room.member", mxid)
+        ).membership === "join"
+      )
+        return;
+    } catch (error: any) {
+      if (error.errcode !== "M_NOT_FOUND") throw error;
+    }
     await this.sdk.getIntent().invite(room, mxid);
     await intent.join(room);
   }
@@ -78,24 +165,55 @@ export class Matrix implements MatrixTransport {
     await bot.setRoomTopic(room, topic);
     if (avatar !== undefined) await bot.setRoomAvatar(room, avatar);
   }
-  async send(sender: string, room: string, type: string, content: Record<string, any>, transaction: string, timestamp?: number) {
+  async send(
+    sender: string,
+    room: string,
+    type: string,
+    content: Record<string, any>,
+    transaction: string,
+    timestamp?: number,
+  ) {
     const intent = this.sdk.getIntent(sender);
     await intent.ensureRegistered();
     await intent.join(room);
-    const result = await intent.matrixClient.doRequest("PUT", `/_matrix/client/v3/rooms/${encodeURIComponent(room)}/send/${encodeURIComponent(type)}/${encodeURIComponent(transaction)}`, timestamp ? { ts: timestamp } : undefined, content);
+    const result = await intent.matrixClient.doRequest(
+      "PUT",
+      `/_matrix/client/v3/rooms/${encodeURIComponent(room)}/send/${encodeURIComponent(type)}/${encodeURIComponent(transaction)}`,
+      timestamp ? { ts: timestamp } : undefined,
+      content,
+    );
     return result.event_id as string;
   }
   async redact(room: string, event: string, transaction: string) {
-    await this.sdk.getIntent().matrixClient.doRequest("PUT", `/_matrix/client/v3/rooms/${encodeURIComponent(room)}/redact/${encodeURIComponent(event)}/${encodeURIComponent(transaction)}`, undefined, { reason: "Revoked in WeChat" });
+    await this.sdk
+      .getIntent()
+      .matrixClient.doRequest(
+        "PUT",
+        `/_matrix/client/v3/rooms/${encodeURIComponent(room)}/redact/${encodeURIComponent(event)}/${encodeURIComponent(transaction)}`,
+        undefined,
+        { reason: "Revoked in WeChat" },
+      );
   }
-  async upload(asset: Asset) { return this.sdk.getIntent().uploadContent(asset.bytes, { type: asset.type, name: asset.name }); }
+  async upload(asset: Asset) {
+    return this.sdk.getIntent().uploadContent(asset.bytes, { type: asset.type, name: asset.name });
+  }
   async download(url: string, limit: number): Promise<Asset> {
     const match = url.match(/^mxc:\/\/([^/]+)\/([^/?#]+)$/);
     if (!match) throw new Error("Invalid Matrix media URL");
     const endpoint = `${this.config.homeserver.address.replace(/\/$/, "")}/_matrix/client/v1/media/download/${encodeURIComponent(match[1])}/${encodeURIComponent(match[2])}`;
-    const response = await fetch(endpoint, { headers: { Authorization: `Bearer ${this.registration.getAppServiceToken()}` }, redirect: "error", signal: AbortSignal.timeout(30000) });
-    if (!response.ok) { await response.body?.cancel(); throw new Error(`Matrix media download failed (${response.status})`); }
-    if (Number(response.headers.get("Content-Length")) > limit) { await response.body?.cancel(); throw new Error("Attachment exceeds the size limit"); }
+    const response = await fetch(endpoint, {
+      headers: { Authorization: `Bearer ${this.registration.getAppServiceToken()}` },
+      redirect: "error",
+      signal: AbortSignal.timeout(30000),
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error(`Matrix media download failed (${response.status})`);
+    }
+    if (Number(response.headers.get("Content-Length")) > limit) {
+      await response.body?.cancel();
+      throw new Error("Attachment exceeds the size limit");
+    }
     const chunks: Uint8Array[] = [];
     let size = 0;
     const reader = response.body?.getReader();
@@ -104,14 +222,27 @@ export class Matrix implements MatrixTransport {
       const { value, done } = await reader.read();
       if (done) break;
       size += value.length;
-      if (size > limit) { await reader.cancel(); throw new Error("Attachment exceeds the size limit"); }
+      if (size > limit) {
+        await reader.cancel();
+        throw new Error("Attachment exceeds the size limit");
+      }
       chunks.push(value);
     }
-    return { bytes: Buffer.concat(chunks), type: response.headers.get("Content-Type")?.split(";")[0] || "application/octet-stream" };
+    return {
+      bytes: Buffer.concat(chunks),
+      type: response.headers.get("Content-Type")?.split(";")[0] || "application/octet-stream",
+    };
   }
   async encrypted(room: string) {
-    try { await this.sdk.getIntent().matrixClient.getRoomStateEventContent(room, "m.room.encryption", ""); return true; }
-    catch (error: any) { if (error.errcode === "M_NOT_FOUND") return false; throw error; }
+    try {
+      await this.sdk
+        .getIntent()
+        .matrixClient.getRoomStateEventContent(room, "m.room.encryption", "");
+      return true;
+    } catch (error: any) {
+      if (error.errcode === "M_NOT_FOUND") return false;
+      throw error;
+    }
   }
 }
 
