@@ -6,6 +6,9 @@
 /vendor/
 /build/
 /dist/
+node_modules/
+**/dist/
+*.tsbuildinfo
 /matrix-wechat
 __pycache__/
 *.pyc

@@ -21,13 +21,20 @@ import {
 } from "@zxing/library";
 import * as frida from "frida";
 import { PNG } from "pngjs";
-import { receivedFile, receivedImage } from "./attachments";
+import { attachmentChecksum, receivedFile, receivedImage, receivedVideo } from "./attachments";
 import { voiceAudioProcess } from "./audio";
 import { imageType, stickerImage } from "./media";
-import outbound from "./native/outbound_profile.json";
-import profile from "./native/storage_profile.json";
+import { outboundProfileSchema, storageProfileSchema } from "./native/profiles";
+import { loginRequestSchema, textMessageSchema, validateParams } from "./schemas";
 import { Storage } from "./storage";
 import { APIError, type Database, type Event, type Row, type Status } from "./types";
+
+const outbound = outboundProfileSchema.parse(
+  Bun.TOML.parse(await Bun.file(new URL("./native/outbound_profile.toml", import.meta.url)).text()),
+);
+const profile = storageProfileSchema.parse(
+  Bun.TOML.parse(await Bun.file(new URL("./native/storage_profile.toml", import.meta.url)).text()),
+);
 
 const root = join(import.meta.dir, ".."),
   data = process.env.WECHAT_DATA_DIR || "/home/wechat/.cache/wechatlinux";
@@ -110,6 +117,7 @@ export class Runtime {
       const token = randomUUID(),
         directory = join(data, "uploads", token),
         path = join(directory, name);
+      const checksum = createHash("md5").update(bytes).digest("hex");
       await mkdir(directory, { recursive: true, mode: 0o700 });
       const cleanup = async () => {
         this.uploads.delete(token);
@@ -145,14 +153,15 @@ export class Runtime {
               page.messages.some(
                 (m) =>
                   m.own &&
-                  m.kind === "file" &&
-                  m.media?.name === name &&
+                  ["file", "video"].includes(m.kind) &&
                   m.timestamp >= started - 2 &&
-                  !m.id.startsWith("local:"),
+                  !m.id.startsWith("local:") &&
+                  attachmentChecksum(m) === checksum,
               )
             ) {
               clearTimeout(timer);
               await cleanup();
+              this.verified.add("send.file");
               return;
             }
           } catch {}
@@ -160,7 +169,6 @@ export class Runtime {
       };
       void finish();
       this.dirty = true;
-      this.verified.add("send.file");
       return { success: true, acknowledgement: "native_handler" };
     });
   }
@@ -522,10 +530,9 @@ export class Runtime {
         if (this.status.state === "logged_in") return { success: true };
         if (Date.now() - this.lastLoginRetry < 5000)
           throw new APIError("not_ready", "Please wait a few seconds before trying again");
-        if (params.mode !== "saved" && params.mode !== "qr")
-          throw new APIError("invalid_params", "Choose saved login or QR login");
+        const { mode } = validateParams(loginRequestSchema, params);
         this.lastLoginRetry = Date.now();
-        let result = await this.native("login", params.mode);
+        let result = await this.native("login", mode);
         if (!result.queued && result.reason === "qr_required")
           result = await this.native("login", "qr");
         if (!result.queued) throw new APIError("not_ready", "WeChat login is not ready yet");
@@ -546,27 +553,14 @@ export class Runtime {
         if (!this.sendReady) throw new APIError("not_ready", "Sending is still initializing");
         if (params.kind !== "text")
           throw new APIError("unverified", "This message type is not yet verified");
-        if (
-          typeof params.chat_id !== "string" ||
-          !params.chat_id ||
-          params.chat_id.length > 256 ||
-          typeof params.text !== "string" ||
-          !params.text.trim() ||
-          Buffer.byteLength(params.text) > 65536
-        )
-          throw new APIError(
-            "invalid_params",
-            "A conversation and nonempty text up to 64 KiB are required",
-          );
+        const message = validateParams(textMessageSchema, params);
         let response;
-        if (params.reply_to !== undefined) {
-          if (typeof params.reply_to !== "string" || !/^\d{1,20}$/.test(params.reply_to))
-            throw new APIError("invalid_params", "A source message ID is required");
-          const quoted = await this.store.message(params.chat_id, params.reply_to);
+        if (message.reply_to !== undefined) {
+          const quoted = await this.store.message(message.chat_id, message.reply_to);
           if (quoted.kind === "system")
             throw new APIError("invalid_params", "System messages cannot be quoted");
           const contacts = await this.store.contacts();
-          response = await this.native("sendreply", params.chat_id, params.text, {
+          response = await this.native("sendreply", message.chat_id, message.text, {
             id: quoted.id,
             local_id: Number(quoted.native?.local_id),
             type: Number(quoted.native?.row.local_type),
@@ -577,7 +571,7 @@ export class Runtime {
             timestamp: Math.floor(quoted.timestamp * 1000),
             content: quoted.native?.decoded_content || quoted.text || `[${quoted.kind}]`,
           });
-        } else response = await this.native("sendtext", params.chat_id, params.text);
+        } else response = await this.native("sendtext", message.chat_id, message.text);
         if (response.success !== true)
           throw new APIError(
             "send_failed",
@@ -618,6 +612,7 @@ export class Runtime {
     if (message.voice) return voiceAudioProcess(message.voice);
     if (message.message.kind === "image") return receivedImage(message.message);
     if (message.message.kind === "file") return receivedFile(message.message);
+    if (message.message.kind === "video") return receivedVideo(message.message);
     return stickerImage(message.message, join(data, "media"));
   }
   async close() {

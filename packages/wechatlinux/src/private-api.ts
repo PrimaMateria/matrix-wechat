@@ -1,5 +1,6 @@
 import { chmod, lstat, unlink } from "node:fs/promises";
 import type { Runtime } from "./runtime";
+import { type APIRequest, apiRequestSchema } from "./schemas";
 
 const LIMIT = 8 * 1024 * 1024;
 // Private diagnostics/development API on the ignored, mode-0700 state mount.
@@ -46,30 +47,24 @@ export async function privateAPI(runtime: Runtime, path = "/home/wechat/api.sock
         while ((end = buffer.indexOf(10)) >= 0) {
           const frame = buffer.subarray(0, end);
           buffer = buffer.subarray(end + 1);
-          let r: any;
+          let request: APIRequest;
           try {
-            r = JSON.parse(frame.toString());
-            if (
-              typeof r.id !== "string" ||
-              typeof r.method !== "string" ||
-              (r.params && typeof r.params !== "object")
-            )
-              throw Error();
+            request = apiRequestSchema.parse(JSON.parse(frame.toString()));
           } catch {
             socket.end();
             return;
           }
           void runtime
-            .dispatch(r.method, r.params || {})
+            .dispatch(request.method, request.params)
             .then((result) => {
-              const response = Buffer.from(JSON.stringify({ id: r.id, result }) + "\n");
+              const response = Buffer.from(JSON.stringify({ id: request.id, result }) + "\n");
               if (response.length > LIMIT || socket.write(response) !== response.length)
                 socket.end();
             })
             .catch((e) => {
               socket.write(
                 JSON.stringify({
-                  id: r.id,
+                  id: request.id,
                   error: {
                     code: e.code || "internal_error",
                     message: e.message || "Private operation failed",

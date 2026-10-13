@@ -1,0 +1,4 @@
+{
+  "extends": ["../wechatlinux/biome.json"],
+  "files": { "includes": ["src/**", "tests/**", "package.json", "tsconfig.json", "biome.json"] }
+}

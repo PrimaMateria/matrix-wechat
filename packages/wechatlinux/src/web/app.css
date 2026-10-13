@@ -363,7 +363,8 @@ button.send:hover {
   padding: 5px 0;
 }
 
-.attachmentImage {
+.attachmentImage,
+.attachmentVideo {
   display: block;
   max-width: min(360px, 100%);
   max-height: 360px;

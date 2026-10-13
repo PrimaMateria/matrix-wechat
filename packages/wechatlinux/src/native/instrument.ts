@@ -2,12 +2,83 @@
 
 const base = Process.mainModule.base;
 const nullPtr = ptr(0);
-const connections = new Map(),
-  retained = new Map(),
-  statements = new Map(),
-  internalHandles = new Set();
+interface DatabaseConnection {
+  id: string;
+  db: NativePointer;
+  path: string;
+  key: NativePointer | null;
+  keyLength: number;
+  cipher: string[];
+  reader: NativePointer | null;
+  readable: boolean;
+  error: string | null;
+}
+interface PreparedStatement {
+  connection: DatabaseConnection;
+  write: boolean;
+  cipher: string | null;
+  transactionEnd: boolean;
+}
+type OpenInvocation = InvocationContext & { output?: NativePointer; path?: string };
+type PrepareInvocation = InvocationContext & {
+  db?: NativePointer;
+  output?: NativePointer;
+  cipher?: string | null;
+  transactionEnd?: boolean;
+};
+type StepInvocation = InvocationContext & { statement?: PreparedStatement };
+type CloseInvocation = InvocationContext & { dbId?: string; connection?: DatabaseConnection };
+type PointerInvocation = InvocationContext & { output?: NativePointer };
+type FileInvocation = InvocationContext & {
+  thread?: number;
+  source?: StdString;
+};
+type FilePathInvocation = InvocationContext & { output?: NativePointer; source?: StdString };
+interface StdString {
+  object: NativePointer;
+  bytes: NativePointer;
+}
+interface NativeSendResult {
+  success: boolean;
+  error_message?: string;
+  message_id?: string;
+  create_time?: string;
+}
+interface PendingSend {
+  resolve: (value: NativeSendResult) => void;
+  reject: (reason: unknown) => void;
+  args: StdString;
+  context: StdString;
+  callback: NativePointer;
+  owner: NativePointer;
+}
+interface QuoteReference {
+  id: string;
+  local_id: number;
+  content: string;
+  sender: string;
+  name: string;
+  type: number;
+  timestamp: number;
+}
+type SendTrace =
+  | { entry: string; sql: string; callers: string[] }
+  | {
+      entry: string;
+      vtable: string;
+      bytes: string;
+      strings: { offset: number; value: string }[];
+      callers: string[];
+    }
+  | { error: string };
+type DatabaseValue = string | number | null | { bytes: number[] };
+
+const connections = new Map<string, DatabaseConnection>(),
+  retained = new Map<string, DatabaseConnection>(),
+  statements = new Map<string, PreparedStatement>(),
+  internalHandles = new Set<string>();
 let connectionSequence = 0;
-const internalThreads = new Map();
+const internalThreads = new Map<number, number>();
 function enterInternal() {
   const tid = Process.getCurrentThreadId();
   internalThreads.set(tid, (internalThreads.get(tid) || 0) + 1);
@@ -19,10 +90,7 @@ function leaveInternal() {
   else internalThreads.delete(tid);
 }
 let loginModel = nullPtr,
-  revision = 0,
-  switchRequested = false,
-  loginOwnerThread = 0;
-const native = {};
+  revision = 0;
 const signatures = {
   libversion: ["pointer", []],
   open_v2: ["int", ["pointer", "pointer", "int", "pointer"]],
@@ -54,28 +122,53 @@ const signatures = {
     "int",
     ["pointer", "pointer", "int", "int", "pointer", "pointer", "pointer", "pointer"],
   ],
+} as const satisfies Record<
+  string,
+  readonly [NativeFunctionReturnType, readonly NativeFunctionArgumentType[]]
+>;
+type SqliteSignatures = typeof signatures;
+type SqliteFunctions = {
+  [Name in keyof SqliteSignatures]: NativeFunction<
+    GetNativeFunctionReturnValue<SqliteSignatures[Name][0]>,
+    Extract<
+      GetNativeFunctionArgumentValue<[...SqliteSignatures[Name][1]]>,
+      NativeFunctionArgumentValue[]
+    >
+  >;
 };
-for (const [name, sig] of Object.entries(signatures)) {
-  const address = base.add(PROFILE.functions[name]);
-  const expected = PROFILE.validation_bytes[name];
-  if (expected) {
-    const actual = Array.from(new Uint8Array(address.readByteArray(expected.length / 2)))
-      .map((x) => x.toString(16).padStart(2, "0"))
-      .join("");
-    if (actual !== expected) throw Error("Unsupported native function bytes: " + name);
-  }
-  native[name] = new NativeFunction(address, sig[0], sig[1], {
-    exceptions: "steal",
-  });
+// Object.entries loses the correlation between each function name and its ABI tuple.
+// The assertion is confined to constructing the table from those exact tuples.
+const native = Object.fromEntries(
+  Object.entries(signatures).map(([name, sig]) => {
+    const address = base.add(PROFILE.functions[name]);
+    const expected = PROFILE.validation_bytes[name];
+    if (expected) {
+      const actual = Array.from(new Uint8Array(readBytes(address, expected.length / 2)))
+        .map((x) => x.toString(16).padStart(2, "0"))
+        .join("");
+      if (actual !== expected) throw Error("Unsupported native function bytes: " + name);
+    }
+    return [
+      name,
+      new NativeFunction(address, sig[0], [...sig[1]], {
+        exceptions: "steal",
+      }),
+    ];
+  }),
+) as SqliteFunctions;
+function readBytes(pointer: NativePointer, length: number): ArrayBuffer {
+  const bytes = pointer.readByteArray(length);
+  if (bytes === null) throw Error("Cannot read bytes from a null pointer");
+  return bytes;
 }
-function text(p) {
-  return p.isNull() ? "" : p.readUtf8String();
+function text(p: NativePointer): string {
+  return p.isNull() ? "" : p.readUtf8String() || "";
 }
-function hint(kind, data) {
+function hint(kind: string, data: Record<string, unknown>) {
   revision++;
   send({ type: "change_hint", kind, revision, ...data });
 }
-function recognized(path) {
+function recognized(path: string) {
   return (
     /\/db_storage\//.test(path) &&
     /\.db$/.test(path) &&
@@ -83,7 +176,7 @@ function recognized(path) {
     !/(?:_fts|weclaw)\.db$/.test(path)
   );
 }
-function discover(db, path) {
+function discover(db: NativePointer, path?: string): DatabaseConnection | null {
   if (db.isNull() || internalHandles.has(db.toString())) return null;
   const id = db.toString();
   let c = connections.get(id);
@@ -112,7 +205,7 @@ function discover(db, path) {
   }
   return c;
 }
-function closeReader(c) {
+function closeReader(c: DatabaseConnection) {
   if (c.reader) {
     const p = c.reader;
     c.reader = null;
@@ -128,12 +221,12 @@ function closeReader(c) {
 for (const name of ["open_v2", "open"]) {
   if (!PROFILE.functions[name]) continue;
   Interceptor.attach(base.add(PROFILE.functions[name]), {
-    onEnter(a) {
+    onEnter(this: OpenInvocation, a) {
       if (internalThreads.has(this.threadId)) return;
       this.output = a[1];
       this.path = text(a[0]);
     },
-    onLeave(ret) {
+    onLeave(this: OpenInvocation, ret) {
       if (this.output && ret.toInt32() === 0) discover(this.output.readPointer(), this.path);
     },
   });
@@ -148,9 +241,9 @@ for (const name of ["key", "key_v2"])
         n = k + 1;
       const length = a[n].toInt32();
       if (length > 0 && length <= 1024) {
-        if (c.key) c.key.writeByteArray(new Uint8Array(c.keyLength));
+        if (c.key) c.key.writeByteArray(new ArrayBuffer(c.keyLength));
         c.key = Memory.alloc(length);
-        c.key.writeByteArray(a[k].readByteArray(length));
+        c.key.writeByteArray(readBytes(a[k], length));
         c.keyLength = length;
         closeReader(c);
         hint("database_configured", { id: c.id, path: c.path });
@@ -159,7 +252,7 @@ for (const name of ["key", "key_v2"])
   });
 for (const name of ["prepare_v2", "prepare_v3"])
   Interceptor.attach(base.add(PROFILE.functions[name]), {
-    onEnter(a) {
+    onEnter(this: PrepareInvocation, a) {
       if (internalThreads.has(this.threadId)) return;
       this.db = a[0];
       this.output = a[name === "prepare_v2" ? 3 : 4];
@@ -182,8 +275,8 @@ for (const name of ["prepare_v2", "prepare_v3"])
         ? sql
         : null;
     },
-    onLeave(ret) {
-      if (!this.output || ret.toInt32() !== 0) return;
+    onLeave(this: PrepareInvocation, ret) {
+      if (!this.output || !this.db || ret.toInt32() !== 0) return;
       const c = discover(this.db);
       if (!c) return;
       const statement = this.output.readPointer();
@@ -191,18 +284,18 @@ for (const name of ["prepare_v2", "prepare_v3"])
         statements.set(statement.toString(), {
           connection: c,
           write: !native.stmt_readonly(statement),
-          cipher: this.cipher,
-          transactionEnd: this.transactionEnd,
+          cipher: this.cipher ?? null,
+          transactionEnd: this.transactionEnd === true,
         });
       }
     },
   });
 Interceptor.attach(base.add(PROFILE.functions.step), {
-  onEnter(a) {
+  onEnter(this: StepInvocation, a) {
     if (internalThreads.has(this.threadId)) return;
     this.statement = statements.get(a[0].toString());
   },
-  onLeave(ret) {
+  onLeave(this: StepInvocation, ret) {
     const s = this.statement;
     if (!s) return;
     const rc = ret.toInt32();
@@ -229,21 +322,22 @@ Interceptor.attach(base.add(PROFILE.functions.finalize), {
 });
 for (const name of ["close", "close_v2"])
   Interceptor.attach(base.add(PROFILE.functions[name]), {
-    onEnter(a) {
+    onEnter(this: CloseInvocation, a) {
       if (internalThreads.has(this.threadId)) return;
       this.dbId = a[0].toString();
-      this.c = connections.get(this.dbId);
+      this.connection = connections.get(this.dbId);
     },
-    onLeave(ret) {
-      if (this.c && ret.toInt32() === 0) {
-        const old = retained.get(this.c.path);
-        if (old && old !== this.c) {
+    onLeave(this: CloseInvocation, ret) {
+      if (!this.dbId) return;
+      if (this.connection && ret.toInt32() === 0) {
+        const old = retained.get(this.connection.path);
+        if (old && old !== this.connection) {
           closeReader(old);
-          if (old.key) old.key.writeByteArray(new Uint8Array(old.keyLength));
+          if (old.key) old.key.writeByteArray(new ArrayBuffer(old.keyLength));
         }
-        retained.set(this.c.path, this.c);
+        retained.set(this.connection.path, this.connection);
         connections.delete(this.dbId);
-        hint("database_closed", { id: this.c.id, path: this.c.path });
+        hint("database_closed", { id: this.connection.id, path: this.connection.path });
       }
     },
   });
@@ -266,7 +360,7 @@ function loginState() {
     can_resume: loginModel.add(0x338).readU8() !== 0,
   };
 }
-function queueLogin(mode) {
+function queueLogin(mode: unknown) {
   if (loginModel.isNull() || !loginModel.readPointer().equals(loginVtable))
     return { queued: false };
   if (mode !== "qr" && mode !== "saved") throw Error("Invalid login action");
@@ -282,12 +376,12 @@ function queueLogin(mode) {
   return { queued: true };
 }
 Interceptor.attach(base.add(0x487f250), {
-  onEnter(a) {
-    this.self = a[0];
+  onEnter(this: PointerInvocation, a) {
+    this.output = a[0];
   },
-  onLeave() {
-    loginModel = this.self;
-    loginOwnerThread = this.threadId;
+  onLeave(this: PointerInvocation) {
+    if (!this.output) return;
+    loginModel = this.output;
     send({ type: "login_state", state: loginState() });
     hint("login_view_open", {});
   },
@@ -306,7 +400,7 @@ Interceptor.attach(base.add(0x4882e50), {
     if (a[0].equals(loginModel)) send({ type: "login_state", state: loginState() });
   },
 });
-function sqlQuery(db, sql, maxRows, allowWrite = false) {
+function sqlQuery(db: NativePointer, sql: string, maxRows: number, allowWrite = false) {
   const holder = Memory.alloc(Process.pointerSize);
   holder.writePointer(nullPtr);
   const tail = Memory.alloc(Process.pointerSize);
@@ -328,8 +422,8 @@ function sqlQuery(db, sql, maxRows, allowWrite = false) {
     if (text(remainder).trim()) throw Error("Only one SQL statement allowed");
     if (!allowWrite && !native.stmt_readonly(statement)) throw Error("Query is not read-only");
     const count = native.column_count(statement),
-      columns = [],
-      rows = [];
+      columns: string[] = [],
+      rows: DatabaseValue[][] = [];
     let truncated = false;
     for (let i = 0; i < count; i++) columns.push(text(native.column_name(statement, i)));
     while (true) {
@@ -340,7 +434,7 @@ function sqlQuery(db, sql, maxRows, allowWrite = false) {
         truncated = true;
         break;
       }
-      const row = [];
+      const row: DatabaseValue[] = [];
       for (let i = 0; i < count; i++) {
         const type = native.column_type(statement, i);
         if (type === 1) row.push(native.column_int64(statement, i).toString());
@@ -352,14 +446,14 @@ function sqlQuery(db, sql, maxRows, allowWrite = false) {
           try {
             row.push(n ? p.readUtf8String(n) : "");
           } catch (_) {
-            row.push({ bytes: Array.from(new Uint8Array(p.readByteArray(n))) });
+            row.push({ bytes: Array.from(new Uint8Array(readBytes(p, n))) });
           }
         } else if (type === 4) {
           const n = native.column_bytes(statement, i);
           if (n > 8 * 1024 * 1024) throw Error("Blob exceeds read limit");
           const p = native.column_blob(statement, i);
           row.push({
-            bytes: Array.from(new Uint8Array(n ? p.readByteArray(n) : new ArrayBuffer(0))),
+            bytes: Array.from(new Uint8Array(n ? readBytes(p, n) : new ArrayBuffer(0))),
           });
         } else row.push(null);
       }
@@ -370,7 +464,7 @@ function sqlQuery(db, sql, maxRows, allowWrite = false) {
     native.finalize(statement);
   }
 }
-function reader(c) {
+function reader(c: DatabaseConnection): NativePointer {
   if (c.reader) return c.reader;
   const out = Memory.alloc(Process.pointerSize);
   out.writePointer(nullPtr);
@@ -428,7 +522,7 @@ function scanQR() {
     )
       continue;
     bytesScanned += range.size;
-    let hits = [];
+    let hits: MemoryScanMatch[] = [];
     try {
       hits = Memory.scanSync(range.base, range.size, "89 50 4e 47 0d 0a 1a 0a");
     } catch (_) {}
@@ -453,7 +547,7 @@ function scanQR() {
         if (end.length) {
           const length = end[0].address.sub(p).toUInt32() + 8;
           candidates.push({
-            bytes: Array.from(new Uint8Array(p.readByteArray(length))),
+            bytes: Array.from(new Uint8Array(readBytes(p, length))),
             width,
             height,
           });
@@ -464,18 +558,18 @@ function scanQR() {
   return { candidates, bytes_scanned: bytesScanned };
 }
 // Executed inside Frida; input and callback lifetimes are retained explicitly.
-const outboundPending = new Map();
+const outboundPending = new Map<string, PendingSend>();
 let outboundSequence = 0;
-const outboundQueue = [];
+const outboundQueue: (() => void)[] = [];
 let drainingOutbound = false;
 Interceptor.attach(base.add(0x60421e0), {
-  onEnter(a) {
-    this.out = a[0];
+  onEnter(this: PointerInvocation, a) {
+    this.output = a[0];
   },
-  onLeave() {
-    if (drainingOutbound || !outboundQueue.length) return;
+  onLeave(this: PointerInvocation) {
+    if (!this.output || drainingOutbound || !outboundQueue.length) return;
     try {
-      const ctx = this.out.readPointer();
+      const ctx = this.output.readPointer();
       if (ctx.isNull() || ctx.add(0x28).readPointer().isNull()) return;
     } catch (_) {
       return;
@@ -483,17 +577,17 @@ Interceptor.attach(base.add(0x60421e0), {
     const job = outboundQueue.shift();
     drainingOutbound = true;
     try {
-      job();
+      job?.();
     } finally {
       drainingOutbound = false;
     }
   },
 });
-function stdString(s) {
+function stdString(s: string): StdString {
   const n = unescape(encodeURIComponent(s)).length,
     object = Memory.alloc(24),
     bytes = Memory.allocUtf8String(s);
-  object.writeByteArray(new Uint8Array(24));
+  object.writeByteArray(new ArrayBuffer(24));
   if (n < 23) {
     object.writeU8(n * 2);
     object.add(1).writeUtf8String(s);
@@ -504,16 +598,16 @@ function stdString(s) {
   }
   return { object, bytes };
 }
-function readStdString(p) {
+function readStdString(p: NativePointer): string {
   if (p.isNull()) return "";
   const long = (p.readU8() & 1) !== 0,
     n = long ? p.add(8).readU64().toNumber() : p.readU8() >>> 1;
   if (n > 2097152) throw Error("Native result exceeds limit");
   return (long ? p.add(16).readPointer() : p.add(1)).readUtf8String(n) || "";
 }
-const imageSources = new Map();
+const imageSources = new Map<string, StdString>();
 let traceSends = false;
-const sendTraces = [];
+const sendTraces: SendTrace[] = [];
 for (const [address, argument] of [
   [0x64ccca0, 2],
   [0x82e61c0, 1],
@@ -537,7 +631,7 @@ for (const [address, argument] of [
         sendTraces.push({
           entry: address.toString(16),
           vtable: message.readPointer().sub(base).toString(),
-          bytes: Array.from(new Uint8Array(message.readByteArray(512)))
+          bytes: Array.from(new Uint8Array(readBytes(message, 512)))
             .map((b) => b.toString(16).padStart(2, "0"))
             .join(""),
           strings,
@@ -550,29 +644,29 @@ for (const [address, argument] of [
       }
     },
   });
-const fileSources = new Map();
-const fileThreads = new Map();
+const fileSources = new Map<string, StdString>();
+const fileThreads = new Map<number, StdString>();
 const assignString = new NativeFunction(base.add(0x450fdb0), "pointer", ["pointer", "pointer"]);
 // Only substitute paths for an API-owned file operation on its native worker thread.
 Interceptor.attach(base.add(0x82e8c10), {
-  onEnter(args) {
+  onEnter(this: FileInvocation, args) {
     this.thread = Process.getCurrentThreadId();
     this.source = fileSources.get(readStdString(args[3]));
     if (this.source) fileThreads.set(this.thread, this.source);
   },
-  onLeave() {
-    if (this.source) fileThreads.delete(this.thread);
+  onLeave(this: FileInvocation) {
+    if (this.source && this.thread !== undefined) fileThreads.delete(this.thread);
   },
 });
 Interceptor.attach(base.add(0x73c7120), {
-  onEnter(args) {
+  onEnter(this: FilePathInvocation, args) {
     this.source = this.returnAddress.equals(base.add(0x82e8cd4))
       ? fileThreads.get(Process.getCurrentThreadId())
       : undefined;
     this.output = args[0];
   },
-  onLeave() {
-    if (this.source) assignString(this.output, this.source.object);
+  onLeave(this: FilePathInvocation) {
+    if (this.source && this.output) assignString(this.output, this.source.object);
   },
 });
 // The JSON route accepts an HTTP prefix, but its core sender requires a local filename.
@@ -583,8 +677,10 @@ Interceptor.attach(base.add(0x82e7ee0), {
     if (source) args[3] = source.object;
   },
 });
-function exactJSON(s) {
-  return JSON.parse(s.replace(/("(?:message_id|server_id|create_time)"\s*:\s*)(-?\d+)/g, '$1"$2"'));
+function exactJSON(s: string): NativeSendResult {
+  return JSON.parse(
+    s.replace(/("(?:message_id|server_id|create_time)"\s*:\s*)(-?\d+)/g, '$1"$2"'),
+  ) as NativeSendResult;
 }
 const invokeResult = new NativeCallback(
   (object, success, error) => {
@@ -616,11 +712,11 @@ const destroyResult = new NativeCallback(
   "void",
   ["pointer"],
 );
-function outboundCall(payload, queued = false) {
-  return new Promise((resolve, reject) => {
+function outboundCall(payload: string, queued = false): Promise<NativeSendResult> {
+  return new Promise<NativeSendResult>((resolve, reject) => {
     const f = OUTBOUND.functions.generic_json_wrapper,
       address = base.add(f.rva);
-    const actual = Array.from(new Uint8Array(address.readByteArray(f.validation_bytes.length / 2)))
+    const actual = Array.from(new Uint8Array(readBytes(address, f.validation_bytes.length / 2)))
       .map((x) => x.toString(16).padStart(2, "0"))
       .join("");
     if (actual !== f.validation_bytes) {
@@ -631,7 +727,7 @@ function outboundCall(payload, queued = false) {
       context = stdString("wechat-api-" + ++outboundSequence);
     const callback = Memory.alloc(32),
       owner = Memory.alloc(Process.pointerSize);
-    callback.writeByteArray(new Uint8Array(32));
+    callback.writeByteArray(new ArrayBuffer(32));
     new NativeFunction(base.add(OUTBOUND.functions.callback_constructor.rva), "void", [
       "pointer",
       "pointer",
@@ -690,8 +786,12 @@ function outboundCall(payload, queued = false) {
 
 // Reproduce the captured desktop Quote workflow, on the account thread.
 // The quote factory copies a native message record and its display information.
-function nativeQuote(chat, content, reference) {
-  return new Promise((resolve, reject) => {
+function nativeQuote(
+  chat: string,
+  content: string,
+  reference: QuoteReference,
+): Promise<NativeSendResult> {
+  return new Promise<NativeSendResult>((resolve, reject) => {
     if (outboundQueue.length >= 16) return reject(Error("Send queue full"));
     let cancelled = false;
     const timer = setTimeout(() => {
@@ -701,8 +801,8 @@ function nativeQuote(chat, content, reference) {
     outboundQueue.push(() => {
       if (cancelled) return;
       clearTimeout(timer);
-      const holders = [],
-        inputs = [],
+      const holders: NativePointer[] = [],
+        inputs: StdString[] = [],
         result = Memory.alloc(64);
       const record = Memory.alloc(0x350),
         extra = Memory.alloc(0x50),
@@ -711,10 +811,10 @@ function nativeQuote(chat, content, reference) {
         initializedExtra = false,
         initializedOriginal = false;
       let stage = "context";
-      result.writeByteArray(new Uint8Array(64));
-      const shared = (rva, parent) => {
+      result.writeByteArray(new ArrayBuffer(64));
+      const shared = (rva: number, parent?: NativePointer) => {
         const holder = Memory.alloc(16);
-        holder.writeByteArray(new Uint8Array(16));
+        holder.writeByteArray(new ArrayBuffer(16));
         holders.push(holder);
         if (parent)
           new NativeFunction(base.add(rva), "pointer", ["pointer", "pointer"])(holder, parent);
@@ -726,12 +826,12 @@ function nativeQuote(chat, content, reference) {
           root = shared(0x619ce90, context.readPointer());
         const manager = shared(0x61ad930, root.readPointer());
         stage = "record";
-        const setString = (target, value) => {
+        const setString = (target: NativePointer, value: string) => {
           const input = stdString(value);
           inputs.push(input);
           assignString(target, input.object);
         };
-        original.writeByteArray(new Uint8Array(0x278));
+        original.writeByteArray(new ArrayBuffer(0x278));
         new NativeFunction(base.add(0x5cdbc20), "void", ["pointer"])(original);
         initializedOriginal = true;
         setString(original.add(0x18), reference.sender);
@@ -761,12 +861,12 @@ function nativeQuote(chat, content, reference) {
         setString(record.add(0x58), chat);
         if (readStdString(record.add(0x238).readPointer().add(0x130)) !== reference.content)
           throw Error("Native quote payload did not preserve the reference content");
-        extra.writeByteArray(new Uint8Array(0x50));
+        extra.writeByteArray(new ArrayBuffer(0x50));
         new NativeFunction(base.add(0x61124e0), "void", ["pointer"])(extra);
         initializedExtra = true;
         stage = "quote factory";
         const source = Memory.alloc(16);
-        source.writeByteArray(new Uint8Array(16));
+        source.writeByteArray(new ArrayBuffer(16));
         holders.push(source);
         const text = stdString(content);
         new NativeFunction(base.add(0x738fec0), "pointer", [
@@ -797,15 +897,16 @@ function nativeQuote(chat, content, reference) {
         )(result, manager.readPointer(), vector, 1);
         resolve({ success: result.readU8() !== 0, error_message: readStdString(result.add(8)) });
       } catch (error) {
-        const nativeDetails = {};
+        const nativeDetails: Record<string, string> = {};
+        const fault = error as { [name: string]: unknown; context?: CpuContext };
         for (const name of Object.getOwnPropertyNames(error))
-          if (!["stack", "message"].includes(name)) nativeDetails[name] = String(error[name]);
-        if (error.context) {
-          nativeDetails.pc = error.context.pc.sub(base).toString();
-          nativeDetails.frames = Thread.backtrace(error.context, Backtracer.ACCURATE)
+          if (!["stack", "message"].includes(name)) nativeDetails[name] = String(fault[name]);
+        if (fault.context) {
+          nativeDetails.pc = fault.context.pc.sub(base).toString();
+          nativeDetails.frames = Thread.backtrace(fault.context, Backtracer.ACCURATE)
             .map((address) => address.sub(base).toString())
             .join(",");
-          nativeDetails.stackCandidates = Thread.backtrace(error.context, Backtracer.FUZZY)
+          nativeDetails.stackCandidates = Thread.backtrace(fault.context, Backtracer.FUZZY)
             .filter(
               (address) => address.compare(base) >= 0 && address.compare(base.add(0xa674ee0)) < 0,
             )
@@ -829,12 +930,12 @@ function nativeQuote(chat, content, reference) {
 }
 
 rpc.exports = {
-  traces(enabled, clear) {
+  traces(enabled: unknown, clear: unknown) {
     traceSends = enabled === true;
     if (clear) sendTraces.length = 0;
     return { enabled: traceSends, traces: sendTraces.slice() };
   },
-  sendreply(chat, content, reference) {
+  sendreply(chat: unknown, content: unknown, reference: QuoteReference | null) {
     if (
       typeof chat !== "string" ||
       !chat ||
@@ -862,7 +963,7 @@ rpc.exports = {
       throw Error("Invalid quoted reply");
     return nativeQuote(chat, content, reference);
   },
-  sendfile(chat, path, name) {
+  sendfile(chat: unknown, path: unknown, name: unknown) {
     if (
       typeof chat !== "string" ||
       !chat ||
@@ -875,10 +976,13 @@ rpc.exports = {
     )
       throw Error("Invalid file upload");
     const marker = "http://127.0.0.1:18742/native-file/" + path.split("/").at(-2);
-    const escape = (value) =>
+    const escape = (value: string) =>
       value.replace(
         /[&<>"']/g,
-        (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[c],
+        (c: string) =>
+          ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[
+            c as "&" | "<" | ">" | '"' | "'"
+          ],
       );
     fileSources.set(marker, stdString(path));
     const xml = `<msg><appmsg><title>${escape(name)}</title><type>6</type><appattach><cdnattachurl>${marker}</cdnattachurl><aeskey>${"0".repeat(32)}</aeskey></appattach></appmsg></msg>`;
@@ -887,7 +991,7 @@ rpc.exports = {
       true,
     ).finally(() => fileSources.delete(marker));
   },
-  sendimage(chat, path) {
+  sendimage(chat: unknown, path: unknown) {
     if (
       typeof chat !== "string" ||
       !chat ||
@@ -905,7 +1009,7 @@ rpc.exports = {
   sendprobe() {
     return outboundCall("{}");
   },
-  sendtext(chat, content) {
+  sendtext(chat: unknown, content: unknown) {
     if (typeof chat !== "string" || !chat || typeof content !== "string" || !content)
       throw Error("Invalid message");
     return outboundCall(
@@ -927,7 +1031,7 @@ rpc.exports = {
   databases() {
     enterInternal();
     try {
-      const unique = new Map();
+      const unique = new Map<string, DatabaseConnection>();
       for (const c of [...retained.values(), ...connections.values()]) {
         const old = unique.get(c.path);
         if (!old || c.key) unique.set(c.path, c);
@@ -950,7 +1054,7 @@ rpc.exports = {
       leaveInternal();
     }
   },
-  query(id, sql, maxRows) {
+  query(id: unknown, sql: unknown, maxRows: number) {
     if (typeof sql !== "string" || sql.length > 65536) throw Error("Invalid SQL");
     const c = [...connections.values(), ...retained.values()].find((c) => c.id === id);
     if (!c) throw Error("Unknown or closed database handle");
@@ -966,7 +1070,7 @@ rpc.exports = {
     try {
       for (const c of new Set([...connections.values(), ...retained.values()])) {
         closeReader(c);
-        if (c.key) c.key.writeByteArray(new Uint8Array(c.keyLength));
+        if (c.key) c.key.writeByteArray(new ArrayBuffer(c.keyLength));
       }
       connections.clear();
       retained.clear();

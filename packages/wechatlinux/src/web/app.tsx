@@ -454,6 +454,17 @@ function App() {
                           })
                         }
                       />
+                    ) : m.kind === "video" ? (
+                      <video
+                        className="attachmentVideo"
+                        controls
+                        preload="metadata"
+                        aria-label="Video message"
+                        src={
+                          "/api/media?" +
+                          new URLSearchParams({ chat_id: m.chat_id, message_id: m.id })
+                        }
+                      />
                     ) : m.kind === "file" ? (
                       <a
                         download

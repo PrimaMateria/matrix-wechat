@@ -399,6 +399,122 @@ export class Storage {
           : undefined,
     };
   }
+  // Bridge imports use bounded native queries rather than materializing every row.
+  // Cursors retain a keyset for each shard, including rows with identical timestamps.
+  private async bridgeSources(chatFilter?: string) {
+    const sources: {
+      db: Database;
+      table: string;
+      chat: string;
+      names: Map<string, string>;
+      projection: string;
+    }[] = [];
+    let found = false;
+    for (const db of await this.databases()) {
+      if (!/^message_\d+\.db$/.test(basename(db.path))) continue;
+      found = true;
+      const tables = await this.tables(db),
+        names = new Map<string, string>();
+      if (tables.has("Name2Id"))
+        for (const row of await this.query(db, "SELECT rowid AS __id,* FROM Name2Id"))
+          names.set(String(row.__id), row.user_name);
+      const chats = new Map([...names.values()].map((name) => ["msg_" + md5(name), name]));
+      for (const [table, columns] of tables) {
+        if (
+          !table.toLowerCase().startsWith("msg_") ||
+          (chatFilter && table.toLowerCase() !== "msg_" + md5(chatFilter))
+        )
+          continue;
+        if (
+          !["local_id", "real_sender_id", "create_time", "local_type", "message_content"].every(
+            (key) => columns.includes(key),
+          )
+        )
+          throw new APIError("unsupported_schema", "Unsupported message schema");
+        const chat = chats.get(table.toLowerCase());
+        if (!chat) throw new APIError("not_ready", "Conversation mapping is still opening");
+        let projection = "*,CAST(local_id AS TEXT) AS __bridge_local";
+        if (columns.includes("WCDB_CT_message_content"))
+          projection += ",wcdb_decompress(message_content,WCDB_CT_message_content) AS __decoded";
+        if (columns.includes("WCDB_CT_source"))
+          projection += ",wcdb_decompress(source,WCDB_CT_source) AS __source";
+        sources.push({ db, table, chat, names, projection });
+      }
+    }
+    if (!found) throw new APIError("not_ready", "Message history is still opening");
+    return sources;
+  }
+  async bridgeChats() {
+    return [...new Set((await this.bridgeSources()).map((source) => source.chat))];
+  }
+  async bridgeHistory(chat: string, cursor?: string, limit = 200) {
+    if (!chat || chat.length > 256 || !Number.isInteger(limit) || limit < 1 || limit > 500)
+      throw new APIError("invalid_params", "Invalid bridge history request");
+    let positions: Record<string, { time: number; local: string }> = {};
+    if (cursor) {
+      try {
+        const decoded = JSON.parse(Buffer.from(cursor, "base64url").toString());
+        if (
+          decoded.account !== this.account() ||
+          decoded.chat !== chat ||
+          !decoded.positions ||
+          typeof decoded.positions !== "object" ||
+          Array.isArray(decoded.positions)
+        )
+          throw Error();
+        for (const position of Object.values(decoded.positions) as {
+          time: number;
+          local: string;
+        }[])
+          if (
+            !position ||
+            !Number.isSafeInteger(position.time) ||
+            typeof position.local !== "string" ||
+            !/^\d+$/.test(position.local)
+          )
+            throw Error();
+        positions = decoded.positions;
+      } catch {
+        throw new APIError("invalid_params", "Invalid bridge history cursor");
+      }
+    }
+    const candidates: { key: string; local: string; message: Message }[] = [];
+    for (const source of await this.bridgeSources(chat)) {
+      const key = JSON.stringify([source.db.path, source.table]),
+        after = positions[key];
+      const where = after
+        ? ` WHERE create_time>${literal(String(after.time))} OR (create_time=${literal(String(after.time))} AND local_id>${literal(after.local)})`
+        : "";
+      for (const row of await this.query(
+        source.db,
+        `SELECT ${source.projection} FROM ${identifier(source.table)}${where} ORDER BY create_time ASC,local_id ASC LIMIT ${limit + 1}`,
+        limit + 1,
+      )) {
+        const local = String(row.__bridge_local);
+        delete row.__bridge_local;
+        candidates.push({
+          key,
+          local,
+          message: this.normalize(source.db, source.table, row, source.names, chat)[1],
+        });
+      }
+    }
+    candidates.sort(
+      (a, b) =>
+        a.message.timestamp - b.message.timestamp ||
+        a.key.localeCompare(b.key) ||
+        (BigInt(a.local) < BigInt(b.local) ? -1 : BigInt(a.local) > BigInt(b.local) ? 1 : 0),
+    );
+    const page = candidates.slice(0, limit);
+    for (const row of page) positions[row.key] = { time: row.message.timestamp, local: row.local };
+    return {
+      messages: page.map((row) => row.message),
+      cursor: Buffer.from(JSON.stringify({ account: this.account(), chat, positions })).toString(
+        "base64url",
+      ),
+      done: candidates.length <= limit,
+    };
+  }
   async avatar(id: string) {
     if (!id || id.length > 256)
       throw new APIError("invalid_params", "A user or conversation is required");
@@ -422,7 +538,28 @@ export class Storage {
   async message(chat: string, id: string) {
     if (!chat || !id || chat.length > 256 || id.length > 256)
       throw new APIError("invalid_params", "A conversation and message are required");
-    const message = [...(await this.messages(chat)).messages.values()].find((m) => m.id === id);
+    let message: Message | undefined;
+    if (/^\d+$/.test(id))
+      for (const source of await this.bridgeSources(chat)) {
+        const rows = await this.query(
+          source.db,
+          `SELECT ${source.projection} FROM ${identifier(source.table)} WHERE server_id=${literal(id)} LIMIT 1`,
+          1,
+        );
+        if (rows[0]) {
+          delete rows[0].__bridge_local;
+          message = this.normalize(source.db, source.table, rows[0], source.names, chat)[1];
+          break;
+        }
+      }
+    else {
+      let cursor: string | undefined;
+      do {
+        const page = await this.bridgeHistory(chat, cursor, 500);
+        message = page.messages.find((row) => row.id === id);
+        cursor = page.done ? undefined : page.cursor;
+      } while (!message && cursor);
+    }
     if (!message) throw new APIError("not_found", "Message not found");
     return message;
   }

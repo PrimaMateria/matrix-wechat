@@ -22,6 +22,10 @@ function metadata(message: Message) {
     throw new APIError("media_unavailable", "Attachment metadata is unavailable");
   return xml.parse(content).msg;
 }
+export function attachmentChecksum(message: Message): string {
+  const root = metadata(message);
+  return String(root?.videomsg?.md5 || root?.appmsg?.md5 || root?.img?.md5 || "").toLowerCase();
+}
 function accountDirectory(message: Message, home: string) {
   const database = message.native?.database;
   if (typeof database !== "string")
@@ -145,4 +149,38 @@ export async function receivedFile(message: Message, home = "/home/wechat") {
     }
   }
   throw new APIError("media_unavailable", "File is not downloaded or could not be verified");
+}
+
+export async function receivedVideo(message: Message, home = "/home/wechat") {
+  const account = accountDirectory(message, home),
+    video = metadata(message).videomsg;
+  const packed = message.native?.row?.packed_info_data?.base64;
+  const cacheID = packed
+    ? protobufPath(Buffer.from(packed, "base64"), [4, 8])?.toString()
+    : undefined;
+  const checksum = String(video?.md5 || ""),
+    size = Number(video?.length);
+  if (
+    !cacheID ||
+    !/^[a-f0-9]{32}$/i.test(cacheID) ||
+    !/^[a-f0-9]{32}$/i.test(checksum) ||
+    !Number.isSafeInteger(size) ||
+    size < 12 ||
+    size > 64 * 1024 * 1024
+  )
+    throw new APIError("media_unavailable", "Video metadata is unavailable");
+  for (const month of months(message)) {
+    try {
+      const bytes = await cachedBytes(join(account, "msg/video", month, cacheID + ".mp4"), account);
+      if (
+        bytes.length === size &&
+        bytes.subarray(4, 8).toString() === "ftyp" &&
+        md5(bytes) === checksum.toLowerCase()
+      )
+        return { bytes, type: "video/mp4" };
+    } catch (error: any) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
+  throw new APIError("media_unavailable", "Video is not downloaded or could not be verified");
 }

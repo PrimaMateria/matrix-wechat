@@ -28,6 +28,25 @@ const readMethods = new Set([
   "conversations",
   "history",
 ]);
+async function readBody(request: Request, limit: number, message: string): Promise<Buffer> {
+  if (Number(request.headers.get("Content-Length") || 0) > limit)
+    throw new APIError("invalid_params", message);
+  const reader = request.body?.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  if (reader)
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      size += value.length;
+      if (size > limit) {
+        await reader.cancel();
+        throw new APIError("invalid_params", message);
+      }
+      chunks.push(value);
+    }
+  return Buffer.concat(chunks);
+}
 export function createHandler(backend: Backend, webRoot = join(import.meta.dir, "../dist/web")) {
   return async function fetch(request: Request): Promise<Response> {
     const url = new URL(request.url),
@@ -52,25 +71,12 @@ export function createHandler(backend: Backend, webRoot = join(import.meta.dir, 
         if (!contentType.startsWith("multipart/form-data;"))
           throw new APIError("invalid_params", "A multipart upload is required");
         const limit = (isFile ? 64 : 20) * 1024 * 1024 + 16384;
-        if (Number(request.headers.get("Content-Length") || 0) > limit)
-          throw new APIError("invalid_params", "Upload is too large");
-        const reader = request.body?.getReader(),
-          chunks: Uint8Array[] = [];
-        let length = 0;
-        if (reader)
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            length += value.length;
-            if (length > limit) {
-              await reader.cancel();
-              throw new APIError("invalid_params", "Upload is too large");
-            }
-            chunks.push(value);
-          }
-        const form = await new Response(Buffer.concat(chunks), {
-          headers: { "Content-Type": contentType },
-        }).formData();
+        const form = await new Response(
+          new Uint8Array(await readBody(request, limit, "Upload is too large")),
+          {
+            headers: { "Content-Type": contentType },
+          },
+        ).formData();
         const chat = form.get("chat_id"),
           file = form.get(isFile ? "file" : "image");
         if (typeof chat !== "string" || !chat || !(file instanceof File))
@@ -194,25 +200,10 @@ export function createHandler(backend: Backend, webRoot = join(import.meta.dir, 
           );
         if (request.headers.get("Content-Type")?.split(";")[0] !== "application/json")
           return json({ error: { code: "invalid_params", message: "JSON is required" } }, 415);
-        if (Number(request.headers.get("Content-Length") || 0) > 131072)
-          throw new APIError("invalid_params", "Message is too large");
-        const reader = request.body?.getReader();
-        let size = 0;
-        const chunks: Uint8Array[] = [];
-        if (reader)
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            size += value.length;
-            if (size > 131072) {
-              await reader.cancel();
-              throw new APIError("invalid_params", "Message is too large");
-            }
-            chunks.push(value);
-          }
+        const body = await readBody(request, 131072, "Message is too large");
         let params: Row;
         try {
-          params = JSON.parse(Buffer.concat(chunks).toString());
+          params = JSON.parse(body.toString());
           if (!params || Array.isArray(params) || typeof params !== "object") throw Error();
         } catch {
           throw new APIError("invalid_params", "Invalid JSON request");

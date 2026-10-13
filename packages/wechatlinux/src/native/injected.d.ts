@@ -1,0 +1,7 @@
+import type { OutboundProfile, StorageProfile } from "./profiles";
+
+declare global {
+  /** Provided by Runtime before evaluating instrument.ts in Frida, not by Bun. */
+  const PROFILE: StorageProfile;
+  const OUTBOUND: OutboundProfile;
+}
