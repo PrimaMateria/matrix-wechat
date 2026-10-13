@@ -198,3 +198,41 @@ test("voice chunks join the media shard chat mapping, preserve exact IDs, and ex
     code: "media_unavailable",
   });
 });
+test("bridge keyset history crosses 50,000 rows and resumes equal timestamps across shards", async () => {
+  const { native, store, chat, table, db } = setup();
+  const insert = db.prepare("INSERT INTO " + table + " VALUES(?,?,1,2,100,?,0)");
+  db.transaction(() => {
+    for (let i = 1; i <= 50001; i++) insert.run(i, BigInt(i), "row " + i);
+  })();
+  const second = native.add("message/message_1.db");
+  second.run("CREATE TABLE Name2Id(user_name TEXT,is_session INTEGER)");
+  second.run("INSERT INTO Name2Id VALUES('test_friend',1),('test_self',1)");
+  second.run(
+    "CREATE TABLE " +
+      table +
+      "(local_id INTEGER PRIMARY KEY,server_id INTEGER,local_type INTEGER,real_sender_id INTEGER,create_time INTEGER,message_content TEXT,WCDB_CT_message_content INTEGER)",
+  );
+  second.run("INSERT INTO " + table + " VALUES(1,9223372036854775806,1,2,100,'other shard',0)");
+  expect(await store.bridgeChats()).toEqual([chat]);
+  let cursor: string | undefined,
+    count = 0;
+  const ids = new Set<string>();
+  while (true) {
+    const page = await store.bridgeHistory(chat, cursor, 500);
+    for (const message of page.messages) {
+      ids.add(message.id);
+      count++;
+    }
+    cursor = page.cursor;
+    if (page.done) break;
+  }
+  expect(count).toBe(50002);
+  expect(ids.size).toBe(50002);
+  expect((await store.bridgeHistory(chat, cursor, 500)).messages).toHaveLength(0);
+  expect((await store.message(chat, "9223372036854775806")).text).toBe("other shard");
+  await expect(store.bridgeHistory("other", cursor)).rejects.toMatchObject({
+    code: "invalid_params",
+  });
+  native.truncated = true;
+  await expect(store.bridgeHistory(chat)).rejects.toMatchObject({ code: "scan_limit" });
+});

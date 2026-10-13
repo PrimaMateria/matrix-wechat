@@ -1,6 +1,6 @@
 # WeChat native API
 
-Container-only WeChat Linux 4.1.13 instrumentation, Bun + TypeScript API, and React chat UI. The native executable is pinned by SHA-256. The parent Matrix bridge remains separate.
+Container-only WeChat Linux 4.1.13 instrumentation, Bun + TypeScript API, and React chat UI. The native executable is pinned by SHA-256.
 
 ```sh
 packages/wechatlinux/scripts/container.sh build

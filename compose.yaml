@@ -3,15 +3,19 @@ services:
     image: ghcr.io/yamada-sexta/matrix-wechat:master
     build: .
     restart: unless-stopped
+    cap_drop: [ALL]
+    cap_add: [SYS_PTRACE, SYS_CHROOT]
+    security_opt: [no-new-privileges:true]
+    shm_size: 256m
     volumes:
-      - ./data:/data
-      # Enable only for network.backend: fake:
-      # - ./fixtures:/fixtures:ro
+      - ./data/bridge:/data:Z
+      - ./data/wechat:/home/wechat:Z
     ports:
       - "127.0.0.1:17778:17778"
+      - "127.0.0.1:18742:18742"
     environment:
       TZ: UTC
 
-# In data/config.yaml set appservice.hostname to 0.0.0.0.
+# Configuration: data/bridge/config.yaml. Saved WeChat login: data/wechat.
 # Set appservice.address to an address the homeserver can reach.
 # Prefer a shared internal Docker network with a containerized homeserver.

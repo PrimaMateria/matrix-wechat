@@ -447,6 +447,24 @@ export class Storage {
   async bridgeChats() {
     return [...new Set((await this.bridgeSources()).map((source) => source.chat))];
   }
+  async bridgeRecent(chat: string, limit = 50) {
+    if (!chat || chat.length > 256 || !Number.isInteger(limit) || limit < 1 || limit > 500)
+      throw new APIError("invalid_params", "Invalid recent history request");
+    const rows: Message[] = [];
+    for (const source of await this.bridgeSources(chat)) {
+      for (const row of await this.query(
+        source.db,
+        `SELECT ${source.projection} FROM ${identifier(source.table)} ORDER BY create_time DESC,local_id DESC LIMIT ${limit}`,
+        limit,
+      )) {
+        delete row.__bridge_local;
+        rows.push(this.normalize(source.db, source.table, row, source.names, chat)[1]);
+      }
+    }
+    return rows
+      .sort((a, b) => b.timestamp - a.timestamp || b.id.localeCompare(a.id))
+      .slice(0, limit);
+  }
   async bridgeHistory(chat: string, cursor?: string, limit = 200) {
     if (!chat || chat.length > 256 || !Number.isInteger(limit) || limit < 1 || limit > 500)
       throw new APIError("invalid_params", "Invalid bridge history request");

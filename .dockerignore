@@ -1,5 +1,7 @@
 .git
 .github
+**/node_modules
+**/dist
 data
 logs
 build
@@ -13,7 +15,6 @@ __pycache__
 state
 sessions
 secrets
-packages
 wechat_api
 .env
 .env.*

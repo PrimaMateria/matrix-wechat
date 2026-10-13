@@ -89,8 +89,28 @@ export class Runtime {
   verified = new Set<string>();
   private uploads = new Map<
     string,
-    { path: string; cachedPath: string; size: number; directory?: string }
+    { path: string; cachedPath?: string; size: number; directory?: string }
   >();
+
+  private checkUploadReady(size: number) {
+    if (this.status.state !== "logged_in" || !this.sendReady)
+      throw new APIError("not_ready", "WeChat is still initializing");
+    const pendingBytes = [...this.uploads.values()].reduce(
+      (total, upload) => total + upload.size,
+      0,
+    );
+    if (this.uploads.size >= 8 || pendingBytes + size > 64 * 1024 * 1024)
+      throw new APIError("not_ready", "Too many uploads; try again shortly");
+  }
+
+  private async cleanupUpload(token: string) {
+    const upload = this.uploads.get(token);
+    if (!upload) return;
+    this.uploads.delete(token);
+    await unlink(upload.path).catch(() => {});
+    if (upload.cachedPath) await unlink(upload.cachedPath).catch(() => {});
+    if (upload.directory) await rmdir(upload.directory).catch(() => {});
+  }
 
   async sendFile(chat: string, bytes: Buffer, name: string) {
     if (
@@ -106,31 +126,20 @@ export class Runtime {
     )
       throw new APIError("invalid_params", "Choose a file up to 64 MiB with a valid filename");
     return this.operation(async () => {
-      if (this.status.state !== "logged_in" || !this.sendReady)
-        throw new APIError("not_ready", "WeChat is still initializing");
-      if (
-        this.uploads.size >= 8 ||
-        [...this.uploads.values()].reduce((n, upload) => n + upload.size, 0) + bytes.length >
-          64 * 1024 * 1024
-      )
-        throw new APIError("not_ready", "Too many uploads; try again shortly");
+      this.checkUploadReady(bytes.length);
       const token = randomUUID(),
         directory = join(data, "uploads", token),
         path = join(directory, name);
       const checksum = createHash("md5").update(bytes).digest("hex");
       await mkdir(directory, { recursive: true, mode: 0o700 });
-      const cleanup = async () => {
-        this.uploads.delete(token);
-        await unlink(path).catch(() => {});
-        await rmdir(directory).catch(() => {});
-      };
+      this.uploads.set(token, { path, directory, size: bytes.length });
+      const cleanup = () => this.cleanupUpload(token);
       try {
         await writeFile(path, bytes, { mode: 0o600, flag: "wx" });
       } catch (error) {
         await cleanup();
         throw error;
       }
-      this.uploads.set(token, { path, cachedPath: path, directory, size: bytes.length });
       const timer = setTimeout(() => void cleanup(), 120000);
       timer.unref();
       const response = await this.native("sendfile", chat, path, name);
@@ -187,14 +196,7 @@ export class Runtime {
         "Choose a PNG, JPEG or GIF image up to 20 MiB; use File for other formats",
       );
     return this.operation(async () => {
-      if (this.status.state !== "logged_in" || !this.sendReady)
-        throw new APIError("not_ready", "WeChat is still initializing");
-      if (
-        this.uploads.size >= 8 ||
-        [...this.uploads.values()].reduce((size, asset) => size + asset.size, 0) + bytes.length >
-          64 * 1024 * 1024
-      )
-        throw new APIError("not_ready", "Too many uploads; try again shortly");
+      this.checkUploadReady(bytes.length);
       const token = randomUUID();
       const directory = join(data, "uploads"),
         path = join(directory, token + "." + (type === "image/jpeg" ? "jpg" : type!.slice(6)));
@@ -210,19 +212,21 @@ export class Runtime {
         "HttpResource",
       );
       const cachedPath = join(cachedDirectory, createHash("md5").update(path).digest("hex"));
-      await mkdir(directory, { recursive: true, mode: 0o700 });
-      await writeFile(path, bytes, { mode: 0o600, flag: "wx" });
-      await mkdir(cachedDirectory, { recursive: true, mode: 0o700 });
-      await writeFile(cachedPath, bytes, { mode: 0o600, flag: "wx" });
       this.uploads.set(token, {
         path,
         cachedPath,
         size: bytes.length,
       });
-      const cleanup = async () => {
-        this.uploads.delete(token);
-        await Promise.all([unlink(path).catch(() => {}), unlink(cachedPath).catch(() => {})]);
-      };
+      const cleanup = () => this.cleanupUpload(token);
+      try {
+        await mkdir(directory, { recursive: true, mode: 0o700 });
+        await writeFile(path, bytes, { mode: 0o600, flag: "wx" });
+        await mkdir(cachedDirectory, { recursive: true, mode: 0o700 });
+        await writeFile(cachedPath, bytes, { mode: 0o600, flag: "wx" });
+      } catch (error) {
+        await cleanup();
+        throw error;
+      }
       const timer = setTimeout(() => void cleanup(), 120000);
       timer.unref();
       const response = await this.native("sendimage", chat, path);
@@ -618,12 +622,7 @@ export class Runtime {
   async close() {
     if (this.stopped) return;
     this.stopped = true;
-    for (const upload of this.uploads.values()) {
-      await unlink(upload.path).catch(() => {});
-      await unlink(upload.cachedPath).catch(() => {});
-      if (upload.directory) await rmdir(upload.directory).catch(() => {});
-    }
-    this.uploads.clear();
+    await Promise.all([...this.uploads.keys()].map((token) => this.cleanupUpload(token)));
     this.qr = undefined;
     try {
       if (this.pid && this.device) await this.device.kill(this.pid);
