@@ -38,7 +38,7 @@ Open http://127.0.0.1:18742/ for WeChat login and chat inspection. Compose publi
 
 To enable double puppeting, set `MATRIX_OWNER_AS_TOKEN` in the bridge container only. Use an existing double-puppeting appservice token whose registered user namespace includes `bridge.owner`. The bridge verifies the owner identity, accepts pending invitations to its own rooms, and mirrors new messages sent from your WeChat account as your real Matrix account. Mirrored events carry an echo marker so they are not sent back to WeChat. Voluntary departures and previously imported event authors are preserved. Without this token, the owner accepts invitations manually and WeChat messages use ghost accounts. Keep this credential out of source control and out of the runtime container.
 
-The bridge invites its configured owner to a management room. Login is command based: send `login qr` for one QR image, or `login prompt` to request phone approval for a saved account. Polling does not post QR images or connection notices. Use `status` to check progress. The optional host-side ADB watcher can approve the desktop-login prompt:
+The bridge invites its configured owner to a management room. Login is command based: send `login qr` for one QR image, or `login prompt` to request phone approval for a saved account. A session drop produces one logout notice, followed by one recovery notice when login returns. QR refreshes and intermediate login states stay silent. Outgoing messages queued during an outage receive one waiting notice. Use `status` to check progress. The optional host-side ADB watcher can approve the desktop-login prompt:
 
 ```sh
 bun packages/wechat-runtime/scripts/adb-login.ts --watch

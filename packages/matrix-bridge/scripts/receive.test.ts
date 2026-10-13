@@ -97,3 +97,20 @@ test("room encryption checks are reused during import and encryption events take
   });
   expect(await f.bridge.usable(f.portal.room)).toBe(false);
 });
+
+test("a disconnected outgoing message stays queued and receives only one waiting notice", async () => {
+  const f = await fixture();
+  f.bridge["connection"] = { state: "disconnected" };
+  f.bridge.accept({
+    event_id: "$waiting",
+    room_id: f.portal.room,
+    sender: f.config.bridge.owner,
+    type: "m.room.message",
+    content: { msgtype: "m.text", body: "send after login" },
+  });
+  await f.bridge["jobs"]();
+  await f.bridge["jobs"]();
+  expect(f.store.queued()).toHaveLength(1);
+  expect(f.sends).toHaveLength(1);
+  expect(f.sends[0][3]).toMatchObject({ body: expect.stringContaining("queued") });
+});

@@ -133,6 +133,30 @@ export class WeChatBridge {
       this.groups.clear();
       this.joined.clear();
     }
+    const state = this.connection.state;
+    const previousState = this.store.meta("connection_state");
+    if (
+      previousState === "logged_in" &&
+      state !== "logged_in" &&
+      !this.store.meta("login_required")
+    ) {
+      const generation = Number(this.store.meta("connection_generation") || "0") + 1;
+      await this.notice(
+        this.management,
+        "WeChat logged out. Live sync and sends are paused; unsent messages remain queued. Send login prompt to resume your saved account, or login qr for a new QR code.",
+        `logout:${generation}`,
+      );
+      this.store.setMeta("connection_generation", String(generation));
+      this.store.setMeta("login_required", "true");
+    } else if (state === "logged_in" && this.store.meta("login_required")) {
+      await this.notice(
+        this.management,
+        "WeChat logged in. Live sync and queued sends are resuming.",
+        `login-restored:${this.store.meta("connection_generation")}`,
+      );
+      this.store.setMeta("login_required", "");
+    }
+    this.store.setMeta("connection_state", state);
   }
   private async loginQR(event: MatrixEvent) {
     for (let attempt = 0; attempt < 20; attempt++) {
@@ -680,7 +704,7 @@ export class WeChatBridge {
       m.local_key || m.id,
     ]);
     this.store.run(
-      "UPDATE inbox SET state='sending',account=?,chat=?,fingerprint=?,baseline=?,started=? WHERE id=?",
+      "UPDATE inbox SET state='sending',notice=0,account=?,chat=?,fingerprint=?,baseline=?,started=? WHERE id=?",
       this.account,
       portal.chat,
       fingerprint,
@@ -721,7 +745,17 @@ export class WeChatBridge {
         if (state !== "wait") this.store.run("UPDATE inbox SET state=? WHERE id=?", state, job.id);
       } catch (error) {
         const current = this.store.get<Inbox>("SELECT * FROM inbox WHERE id=?", job.id)!;
-        if (errorCode(error) === "not_ready" && current.state === "queued") continue;
+        if (errorCode(error) === "not_ready" && current.state === "queued") {
+          if (!current.notice) {
+            await this.notice(
+              event.room_id,
+              "This message is queued while WeChat is disconnected. Send login prompt in the WeChat management room to resume login; it will be sent after login succeeds.",
+              `waiting-login:${job.id}`,
+            );
+            this.store.run("UPDATE inbox SET notice=1 WHERE id=?", job.id);
+          }
+          continue;
+        }
         const uncertain = current.state === "uncertain";
         await this.notice(
           event.room_id,
