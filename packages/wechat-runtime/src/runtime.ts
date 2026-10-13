@@ -564,7 +564,7 @@ export class Runtime {
           if (quoted.kind === "system")
             throw new APIError("invalid_params", "System messages cannot be quoted");
           const contacts = await this.store.contacts();
-          response = await this.native("sendreply", message.chat_id, message.text, {
+          const reference = {
             id: quoted.id,
             local_id: Number(quoted.native?.local_id),
             type: Number(quoted.native?.row.local_type),
@@ -574,7 +574,24 @@ export class Runtime {
               quoted.sender_id,
             timestamp: Math.floor(quoted.timestamp * 1000),
             content: quoted.native?.decoded_content || quoted.text || `[${quoted.kind}]`,
-          });
+          };
+          if (process.env.WECHAT_QUOTE_DEBUG)
+            console.log(
+              "Quote API reference",
+              JSON.stringify({
+                id: reference.id,
+                local_id: reference.local_id,
+                type: reference.type,
+                timestamp: reference.timestamp,
+                source_bytes: Buffer.byteLength(reference.content),
+                text_bytes: Buffer.byteLength(message.text),
+                sender: !!reference.sender,
+                name: !!reference.name,
+              }),
+            );
+          response = await this.native("sendreply", message.chat_id, message.text, reference);
+          if (process.env.WECHAT_QUOTE_DEBUG)
+            console.log("Quote API acknowledgement", response.success);
         } else response = await this.native("sendtext", message.chat_id, message.text);
         if (response.success !== true)
           throw new APIError(

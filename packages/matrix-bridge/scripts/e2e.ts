@@ -293,6 +293,8 @@ try {
     "127.0.0.1:18742:18742",
     "-e",
     `WECHAT_API_TOKEN=${apiToken}`,
+    "-e",
+    "WECHAT_QUOTE_DEBUG=1",
     "-v",
     `${root}/data/wechat:/home/wechat:Z`,
     runtimeImage,
