@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+package_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
+repo_dir=$(CDPATH= cd -- "$script_dir/../../.." && pwd)
+data_dir="$repo_dir/data/wechat"
+engine="${WECHATLINUX_ENGINE:-podman}"
+appimage=""
+container_name=wechatlinux-demo
+image_name=localhost/wechatlinux-demo:dev
+
+usage() {
+    cat <<'EOF'
+Usage: container.sh [--engine podman|docker] [--appimage PATH] COMMAND [args]
+
+  build        Build the web/helper runtime image (never starts WeChat)
+  start        Copy the AppImage if supplied, then start the isolated container
+  stop         Stop the container; preserve all data/wechat files
+  status       Show container state
+  logs         Show container logs; extra engine log flags are accepted
+
+Defaults: rootless Podman, localhost/wechatlinux-demo:dev, wechatlinux-demo.
+Persistent state: repository-root/data/wechat mounted at /home/wechat.
+QR login page: http://127.0.0.1:18742/
+EOF
+}
+
+while (($#)); do
+    case "$1" in
+        --engine|--appimage)
+            option="$1"
+            if (($# < 2)); then printf '%s needs a value\n' "$option" >&2; exit 2; fi
+            if [[ "$option" == --engine ]]; then engine="$2"; else appimage="$2"; fi
+            shift 2
+            ;;
+        -h|--help) usage; exit 0 ;;
+        --) shift; break ;;
+        -*) printf 'Unknown option: %s\n' "$1" >&2; exit 2 ;;
+        *) break ;;
+    esac
+done
+if (($# == 0)); then usage >&2; exit 2; fi
+command="$1"
+shift
+case "$engine" in podman|docker) ;; *) printf 'Engine must be podman or docker\n' >&2; exit 2 ;; esac
+if ! command -v "$engine" >/dev/null; then printf '%s is not installed\n' "$engine" >&2; exit 1; fi
+
+exists() { "$engine" container inspect "$container_name" >/dev/null 2>&1; }
+running() { [[ $("$engine" container inspect --format '{{.State.Running}}' "$container_name" 2>/dev/null) == true ]]; }
+
+case "$command" in
+    build)
+        if (($#)); then printf 'build takes no arguments\n' >&2; exit 2; fi
+        "$engine" build --tag "$image_name" --file "$package_dir/Dockerfile" "$package_dir"
+        ;;
+    start)
+        if (($#)); then printf 'start takes no arguments\n' >&2; exit 2; fi
+        if running; then
+            if [[ -n "$appimage" ]]; then printf 'Stop the container before replacing its AppImage\n' >&2; exit 1; fi
+            printf '%s is already running. QR: http://127.0.0.1:18742/\n' "$container_name"
+            exit 0
+        fi
+        umask 077
+        mkdir -p "$data_dir"
+        chmod 0700 "$data_dir"
+        if [[ -n "$appimage" ]]; then
+            if [[ ! -f "$appimage" ]]; then printf 'AppImage does not exist: %s\n' "$appimage" >&2; exit 1; fi
+            staged="$data_dir/.appimage-copy.$$"
+            trap 'rm -f -- "${staged:-}"' EXIT
+            cp -- "$appimage" "$staged"
+            chmod 0600 "$staged"
+            mv -- "$staged" "$data_dir/WeChatLinux_x86_64.AppImage"
+        fi
+        if [[ ! -f "$data_dir/WeChatLinux_x86_64.AppImage" ]]; then
+            printf 'First start requires --appimage PATH\n' >&2
+            exit 1
+        fi
+        if exists; then "$engine" rm "$container_name" >/dev/null; fi
+        run_options=(--detach --name "$container_name" --cap-drop ALL --cap-add SYS_PTRACE --cap-add SYS_CHROOT
+            --security-opt no-new-privileges --publish 127.0.0.1:18742:18742
+            --volume "$data_dir:/home/wechat:Z" --shm-size 256m)
+        if [[ "$engine" == podman ]]; then
+            if [[ $("$engine" info --format '{{.Host.Security.Rootless}}') != true ]]; then
+                printf 'Run Podman as an ordinary user; this launcher requires rootless Podman\n' >&2
+                exit 1
+            fi
+            run_options+=(--userns keep-id:uid=1000,gid=1000)
+        fi
+        "$engine" run "${run_options[@]}" "$image_name"
+        printf 'QR login page: http://127.0.0.1:18742/\n'
+        ;;
+    stop)
+        if (($#)); then printf 'stop takes no arguments\n' >&2; exit 2; fi
+        if exists; then "$engine" stop --time 20 "$container_name"; else printf '%s is not created\n' "$container_name"; fi
+        ;;
+    status)
+        if (($#)); then printf 'status takes no arguments\n' >&2; exit 2; fi
+        if exists; then "$engine" container inspect --format '{{.Name}}: {{.State.Status}} ({{.State.Running}})' "$container_name"; else printf '%s is not created\n' "$container_name"; fi
+        ;;
+    logs) "$engine" logs "$@" "$container_name" ;;
+    *) printf 'Unknown command: %s\n' "$command" >&2; usage >&2; exit 2 ;;
+esac

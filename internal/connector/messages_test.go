@@ -3,6 +3,9 @@ package connector
 import (
 	"context"
 	"errors"
+	"strings"
+	"testing"
+
 	"github.com/yamada-sexta/matrix-wechat/pkg/backend"
 	"github.com/yamada-sexta/matrix-wechat/pkg/backend/fake"
 	"maunium.net/go/mautrix/bridgev2"
@@ -10,8 +13,6 @@ import (
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
-	"strings"
-	"testing"
 )
 
 func testClient(t *testing.T) *Client {

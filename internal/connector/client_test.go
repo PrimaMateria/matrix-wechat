@@ -3,9 +3,10 @@ package connector
 import (
 	"context"
 	"errors"
+	"testing"
+
 	"github.com/yamada-sexta/matrix-wechat/pkg/backend"
 	"github.com/yamada-sexta/matrix-wechat/pkg/backend/fake"
-	"testing"
 )
 
 func TestCheckpointOnlyAfterDeliveryAndSave(t *testing.T) {

@@ -5,15 +5,16 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
+	"time"
+
 	"github.com/yamada-sexta/matrix-wechat/pkg/backend"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/database"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/bridgev2/simplevent"
 	"maunium.net/go/mautrix/bridgev2/status"
-	"sync"
-	"sync/atomic"
-	"time"
 )
 
 type Client struct {

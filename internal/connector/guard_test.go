@@ -3,13 +3,14 @@ package connector
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+
 	_ "github.com/mattn/go-sqlite3"
 	"go.mau.fi/util/dbutil"
 	_ "go.mau.fi/util/dbutil/litestream"
 	"maunium.net/go/mautrix/bridgev2/database"
-	"os"
-	"path/filepath"
-	"testing"
 )
 
 func testDatabase(t *testing.T) *dbutil.Database {

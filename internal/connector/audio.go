@@ -3,9 +3,10 @@ package connector
 import (
 	"context"
 	"fmt"
-	silk "github.com/wdvxdr1123/go-silk"
 	"os"
 	"os/exec"
+
+	silk "github.com/wdvxdr1123/go-silk"
 )
 
 func silkToOgg(ctx context.Context, raw []byte) ([]byte, error) {

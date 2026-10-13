@@ -5,13 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/rs/zerolog"
-	_ "go.mau.fi/util/dbutil/litestream"
-	"maunium.net/go/mautrix"
-	"maunium.net/go/mautrix/crypto/cryptohelper"
-	_ "maunium.net/go/mautrix/crypto/goolm"
-	"maunium.net/go/mautrix/event"
-	"maunium.net/go/mautrix/id"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,6 +12,14 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/rs/zerolog"
+	_ "go.mau.fi/util/dbutil/litestream"
+	"maunium.net/go/mautrix"
+	"maunium.net/go/mautrix/crypto/cryptohelper"
+	_ "maunium.net/go/mautrix/crypto/goolm"
+	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 )
 
 type credentials struct {

@@ -3,10 +3,11 @@ package fake
 import (
 	"context"
 	"errors"
-	"github.com/yamada-sexta/matrix-wechat/pkg/backend"
 	"io"
 	"testing"
 	"time"
+
+	"github.com/yamada-sexta/matrix-wechat/pkg/backend"
 )
 
 func fixture(id string) Fixture {

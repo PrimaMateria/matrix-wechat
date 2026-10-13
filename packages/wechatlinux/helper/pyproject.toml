@@ -1,9 +1,0 @@
-[project]
-name = "wechatlinux-helper"
-version = "0.1.0"
-requires-python = ">=3.10"
-dependencies = [
-    "frida>=17.23.3",
-    "pillow>=12.3.0",
-    "zxing-cpp>=3.1.1",
-]

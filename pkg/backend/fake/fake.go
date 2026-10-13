@@ -7,13 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/yamada-sexta/matrix-wechat/pkg/backend"
 	"io"
 	"os"
 	"slices"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/yamada-sexta/matrix-wechat/pkg/backend"
 )
 
 type Fixture struct {

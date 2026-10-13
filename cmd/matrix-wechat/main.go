@@ -3,12 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+
 	matrixwechat "github.com/yamada-sexta/matrix-wechat"
 	"github.com/yamada-sexta/matrix-wechat/internal/connector"
 	_ "go.mau.fi/util/dbutil/litestream"
 	"maunium.net/go/mautrix/bridgev2/matrix/mxmain"
 	_ "maunium.net/go/mautrix/crypto/goolm"
-	"os"
 )
 
 var Tag, Commit, BuildTime = "unknown", "unknown", "unknown"

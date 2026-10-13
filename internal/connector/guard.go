@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"go.mau.fi/util/dbutil"
-	"gopkg.in/yaml.v3"
 	"os"
 	"strings"
+
+	"go.mau.fi/util/dbutil"
+	"gopkg.in/yaml.v3"
 )
 
 var ErrLegacyState = errors.New("legacy bridge state is not supported; back it up and use a fresh bridgev2 config and database (see docs/upgrading.md)")

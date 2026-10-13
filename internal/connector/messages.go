@@ -5,18 +5,19 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"github.com/gabriel-vasile/mimetype"
-	"github.com/yamada-sexta/matrix-wechat/pkg/backend"
 	"html"
 	"io"
 	"math"
+	"net/url"
+	"strconv"
+	"strings"
+
+	"github.com/gabriel-vasile/mimetype"
+	"github.com/yamada-sexta/matrix-wechat/pkg/backend"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/networkid"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/format"
-	"net/url"
-	"strconv"
-	"strings"
 )
 
 func matrixType(kind backend.Kind) event.MessageType {

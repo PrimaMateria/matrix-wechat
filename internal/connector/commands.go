@@ -4,13 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
+	"time"
+
 	"github.com/yamada-sexta/matrix-wechat/pkg/backend"
 	"maunium.net/go/mautrix/bridgev2"
 	"maunium.net/go/mautrix/bridgev2/commands"
 	"maunium.net/go/mautrix/bridgev2/networkid"
-	"sort"
-	"strings"
-	"time"
 )
 
 func commandClient(ce *commands.Event) (*Client, error) {

@@ -2,11 +2,12 @@
 'use strict';
 const base = Process.mainModule.base;
 const nullPtr = ptr(0);
-const connections = new Map(), statements = new Map(), internalHandles = new Set();
+const connections = new Map(), retained = new Map(), statements = new Map(), internalHandles = new Set();
+let connectionSequence=0;
 const internalThreads = new Map();
 function enterInternal(){const tid=Process.getCurrentThreadId();internalThreads.set(tid,(internalThreads.get(tid)||0)+1);}
 function leaveInternal(){const tid=Process.getCurrentThreadId();const n=(internalThreads.get(tid)||1)-1;if(n)internalThreads.set(tid,n);else internalThreads.delete(tid);}
-let loginModel = nullPtr, revision = 0;
+let loginModel = nullPtr, revision = 0, switchRequested = false, loginOwnerThread = 0;
 const native = {};
 const signatures = {
  libversion:['pointer',[]], open_v2:['int',['pointer','pointer','int','pointer']],
@@ -36,7 +37,7 @@ function discover(db,path){
  const id=db.toString();let c=connections.get(id);
  if(!path){try{path=text(native.db_filename(db,Memory.allocUtf8String('main')));}catch(_){return null;}}
  if(!recognized(path))return null;
- if(!c){c={id,db,path,key:null,keyLength:0,cipher:[],reader:null,readable:false,error:null};connections.set(id,c);hint('database_open',{id,path});}
+ if(!c){c={id:id+"#"+(++connectionSequence),db,path,key:null,keyLength:0,cipher:[],reader:null,readable:false,error:null};connections.set(id,c);hint('database_open',{id,path});}
  return c;
 }
 function closeReader(c){if(c.reader){const p=c.reader;c.reader=null;enterInternal();try{native.close_v2(p);}finally{leaveInternal();internalHandles.delete(p.toString());}}}
@@ -51,29 +52,42 @@ for(const name of ['key','key_v2'])Interceptor.attach(base.add(PROFILE.functions
  onEnter(a){if(internalThreads.has(this.threadId))return;const c=discover(a[0]);if(!c)return;const k=name==='key'?1:2,n=k+1;const length=a[n].toInt32();if(length>0&&length<=1024){if(c.key)c.key.writeByteArray(new Uint8Array(c.keyLength));c.key=Memory.alloc(length);c.key.writeByteArray(a[k].readByteArray(length));c.keyLength=length;closeReader(c);hint('database_configured',{id:c.id,path:c.path});}}
 });
 for(const name of ['prepare_v2','prepare_v3'])Interceptor.attach(base.add(PROFILE.functions[name]),{
- onEnter(a){if(internalThreads.has(this.threadId))return;this.db=a[0];this.output=a[name==='prepare_v2'?3:4];let sql='';try{sql=text(a[1]);}catch(_){}this.cipher=sql.match(/^\s*PRAGMA\s+(cipher_[a-z_]+|kdf_iter|fast_kdf_iter)\s*=\s*([a-zA-Z0-9_'"\-]+)\s*;?\s*$/i)?sql:null;},
- onLeave(ret){if(!this.output||ret.toInt32()!==0)return;const c=discover(this.db);if(!c)return;const statement=this.output.readPointer();if(!statement.isNull()){statements.set(statement.toString(),{connection:c,write:!native.stmt_readonly(statement),cipher:this.cipher});}}
+ onEnter(a){if(internalThreads.has(this.threadId))return;this.db=a[0];this.output=a[name==='prepare_v2'?3:4];let sql='';try{sql=text(a[1]);}catch(_){}this.transactionEnd=/^\s*(COMMIT|END|ROLLBACK)\b/i.test(sql);this.cipher=sql.match(/^\s*PRAGMA\s+(cipher_[a-z_]+|kdf_iter|fast_kdf_iter)\s*=\s*([a-zA-Z0-9_'"\-]+)\s*;?\s*$/i)?sql:null;},
+ onLeave(ret){if(!this.output||ret.toInt32()!==0)return;const c=discover(this.db);if(!c)return;const statement=this.output.readPointer();if(!statement.isNull()){statements.set(statement.toString(),{connection:c,write:!native.stmt_readonly(statement),cipher:this.cipher,transactionEnd:this.transactionEnd});}}
 });
 Interceptor.attach(base.add(PROFILE.functions.step),{
  onEnter(a){if(internalThreads.has(this.threadId))return;this.statement=statements.get(a[0].toString());},
- onLeave(ret){const s=this.statement;if(!s)return;const rc=ret.toInt32();if(rc===101&&s.cipher&&!s.connection.cipher.includes(s.cipher)){s.connection.cipher.push(s.cipher);closeReader(s.connection);}if(s.write&&rc===101){let committed=false;try{committed=native.get_autocommit(s.connection.db)!==0;}catch(_){}hint(committed?'committed_write':'transaction_write',{id:s.connection.id,path:s.connection.path});}}
+ onLeave(ret){const s=this.statement;if(!s)return;const rc=ret.toInt32();if(rc===101&&s.cipher&&!s.connection.cipher.includes(s.cipher)){s.connection.cipher.push(s.cipher);closeReader(s.connection);}if((s.write||s.transactionEnd)&&rc===101){let committed=false;try{committed=native.get_autocommit(s.connection.db)!==0;}catch(_){}hint(committed?'committed_write':'transaction_write',{id:s.connection.id,path:s.connection.path});}}
 });
 Interceptor.attach(base.add(PROFILE.functions.finalize),{onEnter(a){if(!internalThreads.has(this.threadId))statements.delete(a[0].toString());}});
 for(const name of ['close','close_v2'])Interceptor.attach(base.add(PROFILE.functions[name]),{
- onEnter(a){if(internalThreads.has(this.threadId))return;this.c=connections.get(a[0].toString());if(this.c)closeReader(this.c);},
- onLeave(ret){if(this.c&&ret.toInt32()===0){if(this.c.key)this.c.key.writeByteArray(new Uint8Array(this.c.keyLength));connections.delete(this.c.id);hint('database_closed',{id:this.c.id,path:this.c.path});}}
+ onEnter(a){if(internalThreads.has(this.threadId))return;this.dbId=a[0].toString();this.c=connections.get(this.dbId);},
+ onLeave(ret){if(this.c&&ret.toInt32()===0){const old=retained.get(this.c.path);if(old&&old!==this.c){closeReader(old);if(old.key)old.key.writeByteArray(new Uint8Array(old.keyLength));}retained.set(this.c.path,this.c);connections.delete(this.dbId);hint('database_closed',{id:this.c.id,path:this.c.path});}}
 });
 const loginVtable=base.add(0xa6f0ac8);
-Interceptor.attach(base.add(0x487f250),{onEnter(a){this.self=a[0];},onLeave(){loginModel=this.self;hint('login_view_open',{});}});
+const nativeNew=new NativeFunction(base.add(0xa674ee0),'pointer',['ulong']);
+const queueSlot=new NativeFunction(base.add(0xa50af00),'void',['int','int','pointer','pointer'],{exceptions:'steal'});
+function queueAccountSwitch(){
+ if(loginModel.isNull()||!loginModel.readPointer().equals(loginVtable))return {queued:false};
+ const window=loginModel.sub(0x278);
+ if(!window.readPointer().equals(base.add(0xa6f0b50)))throw Error('Invalid login window');
+ const slot=nativeNew(24);slot.writeU32(1);slot.add(4).writeU32(0);slot.add(8).writePointer(base.add(0x4874550));slot.add(16).writePointer(window);
+ queueSlot(0,0,window,slot);return {queued:true};
+}
+Interceptor.attach(base.add(0x487f250),{onEnter(a){this.self=a[0];},onLeave(){loginModel=this.self;loginOwnerThread=this.threadId;hint('login_view_open',{});}});
 Interceptor.attach(base.add(0x48808e0),{onEnter(a){if(loginModel.equals(a[0])){loginModel=nullPtr;hint('login_view_closed',{});}}});
 function sqlQuery(db,sql,maxRows,allowWrite=false){
  const holder=Memory.alloc(Process.pointerSize);holder.writePointer(nullPtr);
  const tail=Memory.alloc(Process.pointerSize);let statement=nullPtr;
- const rc=native.prepare_v2(db,Memory.allocUtf8String(sql),-1,holder,tail);
+ // SQLite's tail points into this buffer; retain it until tail validation.
+ const sqlBuffer=Memory.allocUtf8String(sql);
+ const rc=native.prepare_v2(db,sqlBuffer,-1,holder,tail);
  if(rc!==0)throw Error('SQLite prepare '+rc+': '+text(native.errmsg(db)));
  statement=holder.readPointer();if(statement.isNull())throw Error('Empty SQL statement');
  try{
-  if(text(tail.readPointer()).trim())throw Error('Only one SQL statement allowed');
+  const remainder=tail.readPointer();
+  if(remainder.isNull()||remainder.compare(sqlBuffer)<0||remainder.compare(sqlBuffer.add(unescape(encodeURIComponent(sql)).length))>0)throw Error('Invalid SQL tail');
+  if(text(remainder).trim())throw Error('Only one SQL statement allowed');
   if(!allowWrite&&!native.stmt_readonly(statement))throw Error('Query is not read-only');
   const count=native.column_count(statement),columns=[],rows=[];let truncated=false;
   for(let i=0;i<count;i++)columns.push(text(native.column_name(statement,i)));
@@ -106,12 +120,46 @@ function scanQR(){
  }
  return {candidates,bytes_scanned:bytesScanned};
 }
+// Executed inside Frida; input and callback lifetimes are retained explicitly.
+const outboundPending = new Map();
+let outboundSequence = 0;
+const outboundQueue=[];let drainingOutbound=false;
+Interceptor.attach(base.add(0x60421e0),{onEnter(a){this.out=a[0];},onLeave(){if(drainingOutbound||!outboundQueue.length)return;try{const ctx=this.out.readPointer();if(ctx.isNull()||ctx.add(0x28).readPointer().isNull())return;}catch(_){return;}const job=outboundQueue.shift();drainingOutbound=true;try{job();}finally{drainingOutbound=false;}}});
+function stdString(s) {
+ const n=unescape(encodeURIComponent(s)).length, object=Memory.alloc(24), bytes=Memory.allocUtf8String(s);
+ object.writeByteArray(new Uint8Array(24));
+ if(n<23){object.writeU8(n*2);object.add(1).writeUtf8String(s);}else{object.writeU64((Math.ceil((n+1)/16)*16)|1);object.add(8).writeU64(n);object.add(16).writePointer(bytes);}
+ return {object,bytes};
+}
+function readStdString(p){if(p.isNull())return '';const long=(p.readU8()&1)!==0,n=long?p.add(8).readU64().toNumber():p.readU8()>>>1;if(n>2097152)throw Error('Native result exceeds limit');return (long?p.add(16).readPointer():p.add(1)).readUtf8String(n)||'';}
+function exactJSON(s){return JSON.parse(s.replace(/("(?:message_id|server_id|create_time)"\s*:\s*)(-?\d+)/g,'$1"$2"'));}
+const invokeResult=new NativeCallback((object,success,error)=>{
+ const job=outboundPending.get(object.toString());if(!job)return;
+ try{const ok=readStdString(success),failure=readStdString(error);let result=ok?exactJSON(ok):{success:false,error_message:failure||'Native handler returned no result'};if(failure&&!result.error_message)result.error_message=failure;job.resolve(result);}catch(e){job.reject(e);}
+},'void',['pointer','pointer','pointer']);
+const destroyResult=new NativeCallback(object=>{const key=object.toString();setImmediate(()=>outboundPending.delete(key));},'void',['pointer']);
+function outboundCall(payload,queued=false){
+ return new Promise((resolve,reject)=>{
+  const f=OUTBOUND.functions.generic_json_wrapper, address=base.add(f.rva);
+  const actual=Array.from(new Uint8Array(address.readByteArray(f.validation_bytes.length/2))).map(x=>x.toString(16).padStart(2,'0')).join('');
+  if(actual!==f.validation_bytes){reject(Error('Unsupported send function'));return;}
+  const args=stdString(payload), context=stdString('wechat-api-'+(++outboundSequence));
+  const callback=Memory.alloc(32),owner=Memory.alloc(Process.pointerSize);callback.writeByteArray(new Uint8Array(32));
+  new NativeFunction(base.add(OUTBOUND.functions.callback_constructor.rva),'void',['pointer','pointer','pointer'])(callback,invokeResult,destroyResult);owner.writePointer(callback);
+  let invoked=false,cancelled=false;const timer=setTimeout(()=>{cancelled=true;if(!invoked)outboundPending.delete(callback.toString());reject(Error(invoked?'Send acknowledgement timed out; delivery is uncertain; do not automatically retry':'Timed out waiting for the native account thread; message was not sent'));},30000);
+  outboundPending.set(callback.toString(),{resolve:value=>{clearTimeout(timer);resolve(value);},reject:error=>{clearTimeout(timer);reject(error);},args,context,callback,owner});
+  const invoke=()=>{if(cancelled)return;invoked=true;try{new NativeFunction(address,'void',['pointer','pointer','pointer','pointer'],{exceptions:'steal'})(nullPtr,args.object,context.object,owner);}catch(e){clearTimeout(timer);reject(e);}};if(queued){if(outboundQueue.length>=16){clearTimeout(timer);reject(Error('Send queue full'));return;}outboundQueue.push(invoke);}else invoke();
+ });
+}
+
 rpc.exports={
+ sendprobe(){return outboundCall("{}");},
+ sendtext(chat,content){if(typeof chat!=="string"||!chat||typeof content!=="string"||!content)throw Error("Invalid message");return outboundCall(JSON.stringify({chat_id:chat,message_type:1,content_xml:content}),true);},
+ switchaccount:queueAccountSwitch,
  status(){return {sqlite_version:text(native.libversion()),login_view_active:!loginModel.isNull(),revision,databases:connections.size};},
  scanqr:scanQR,
- databases(){enterInternal();try{const unique=new Map();for(const c of connections.values()){const old=unique.get(c.path);if(!old||c.key)unique.set(c.path,c);}return Array.from(unique.values()).map(c=>{try{reader(c);}catch(_){}return {id:c.id,path:c.path,encrypted:!!c.key,readable:c.readable,error:c.error,key_captured:!!c.key,cipher_settings:c.cipher};});}finally{leaveInternal();}},
- query(id,sql,maxRows){if(typeof sql!=='string'||sql.length>65536)throw Error('Invalid SQL');const c=connections.get(id);if(!c)throw Error('Unknown or closed database handle');enterInternal();try{return sqlQuery(reader(c),sql,Math.max(1,Math.min(maxRows||1000,50001)));}finally{leaveInternal();}},
- bootstrap(contexts){enterInternal();let captured=0;try{for(const item of contexts){try{const db=ptr(item.db);const c=discover(db);if(!c)continue;const n=Number(item.len);if(n<1||n>1024)continue;if(c.key)c.key.writeByteArray(new Uint8Array(c.keyLength));c.key=Memory.alloc(n);c.key.writeByteArray(ptr(item.ptr).readByteArray(n));c.keyLength=n;closeReader(c);captured++;}catch(_){}}return {contexts:captured};}finally{leaveInternal(); }},
- dispose(){enterInternal();try{for(const c of connections.values()){closeReader(c);if(c.key)c.key.writeByteArray(new Uint8Array(c.keyLength));}connections.clear();statements.clear();}finally{leaveInternal();}}
+ databases(){enterInternal();try{const unique=new Map();for(const c of [...retained.values(),...connections.values()]){const old=unique.get(c.path);if(!old||c.key)unique.set(c.path,c);}return Array.from(unique.values()).map(c=>{try{reader(c);}catch(_){}return {id:c.id,path:c.path,encrypted:!!c.key,readable:c.readable,error:c.error,key_captured:!!c.key,cipher_settings:c.cipher};});}finally{leaveInternal();}},
+ query(id,sql,maxRows){if(typeof sql!=='string'||sql.length>65536)throw Error('Invalid SQL');const c=[...connections.values(),...retained.values()].find(c=>c.id===id);if(!c)throw Error('Unknown or closed database handle');enterInternal();try{return sqlQuery(reader(c),sql,Math.max(1,Math.min(maxRows||1000,50001)));}finally{leaveInternal();}},
+ dispose(){enterInternal();try{for(const c of new Set([...connections.values(),...retained.values()])){closeReader(c);if(c.key)c.key.writeByteArray(new Uint8Array(c.keyLength));}connections.clear();retained.clear();statements.clear();}finally{leaveInternal();}}
 };
 send({type:'ready',sqlite_version:text(native.libversion())});
