@@ -66,7 +66,12 @@ case "$command" in
         run_options=(--detach --name "$container_name" --cap-drop ALL --cap-add SYS_PTRACE --cap-add SYS_CHROOT
             --security-opt no-new-privileges --publish 127.0.0.1:18742:18742
             --volume "$data_dir:/home/wechat:Z" --shm-size 256m)
-        if [[ -f "$repo_dir/.env" ]]; then run_options+=(--env-file "$repo_dir/.env"); fi
+        if [[ -f "$repo_dir/.env" ]]; then
+            runtime_env_file=$(mktemp)
+            trap 'rm -f "$runtime_env_file"' EXIT
+            sed -n -E '/^[[:space:]]*(WECHAT_[A-Z0-9_]+|TZ)=/p' "$repo_dir/.env" > "$runtime_env_file"
+            run_options+=(--env-file "$runtime_env_file")
+        fi
         if [[ -n "${WECHAT_API_TOKEN:-}" ]]; then run_options+=(--env WECHAT_API_TOKEN); fi
         if [[ -n "${WECHAT_WEB_UI:-}" ]]; then run_options+=(--env WECHAT_WEB_UI); fi
         if [[ "$engine" == podman ]]; then

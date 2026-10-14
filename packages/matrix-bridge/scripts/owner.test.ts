@@ -52,7 +52,7 @@ test("retries a failed owner join instead of caching success", async () => {
   const request = spyOn(globalThis, "fetch")
     .mockResolvedValueOnce(new Response(null, { status: 503 }))
     .mockResolvedValueOnce(Response.json({ room_id: "!room:example.com" }));
-  await expect(matrix.joinOwner("!room:example.com")).rejects.toThrow("503");
+  await expect(matrix.joinOwner("!room:example.com")).rejects.toMatchObject({ statusCode: 503 });
   await matrix.joinOwner("!room:example.com");
   expect(request).toHaveBeenCalledTimes(2);
 });

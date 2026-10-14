@@ -1,4 +1,4 @@
-import { setRequestFn } from "@vector-im/matrix-bot-sdk";
+import { MatrixClient, setRequestFn } from "@vector-im/matrix-bot-sdk";
 import { AppServiceRegistration, Bridge, Logger } from "matrix-appservice-bridge";
 import type { Config } from "./config";
 import type { Asset } from "./messages";
@@ -7,6 +7,7 @@ import { hash, type MatrixEvent } from "./store";
 export class Matrix {
   readonly sdk: Bridge;
   readonly bot: string;
+  private readonly ownerClient?: MatrixClient;
   private ownerJoined = new Set<string>();
   constructor(
     readonly config: Config,
@@ -42,6 +43,10 @@ export class Matrix {
         };
       },
     );
+    if (ownerToken) {
+      this.ownerClient = new MatrixClient(config.homeserver.address, ownerToken);
+      this.ownerClient.impersonateUserId(config.bridge.owner);
+    }
     this.bot = `@${config.appservice.bot_username}:${config.homeserver.domain}`;
     Logger.configure({ console: "warn" });
     this.sdk = new Bridge({
@@ -69,40 +74,15 @@ export class Matrix {
     });
   }
   async start() {
-    if (this.ownerToken) {
-      const identity = await this.ownerAPI("/_matrix/client/v3/account/whoami", "GET");
+    if (this.ownerClient) {
+      const identity = await this.ownerClient.getWhoAmI();
       if (identity.user_id !== this.config.bridge.owner)
         throw new Error("Matrix owner token does not match bridge.owner");
     }
     await this.sdk.run(this.config.appservice.port, undefined, this.config.appservice.hostname);
   }
-  private async ownerAPI(
-    path: string,
-    method: "GET" | "POST" | "PUT",
-    content?: Record<string, any>,
-    timestamp?: number,
-  ) {
-    const url = new URL(path, this.config.homeserver.address);
-    url.searchParams.set("user_id", this.config.bridge.owner);
-    if (timestamp) url.searchParams.set("ts", String(timestamp));
-    const response = await fetch(url, {
-      method,
-      headers: {
-        Authorization: `Bearer ${this.ownerToken}`,
-        "Content-Type": "application/json",
-      },
-      body: method === "GET" ? undefined : JSON.stringify(content || {}),
-      redirect: "error",
-      signal: AbortSignal.timeout(30000),
-    });
-    if (!response.ok) {
-      await response.body?.cancel();
-      throw new Error(`Matrix owner request failed (${response.status})`);
-    }
-    return response.json() as Promise<{ user_id?: string; room_id?: string; event_id?: string }>;
-  }
   async joinOwner(room: string) {
-    if (!this.ownerToken || this.ownerJoined.has(room)) return room;
+    if (!this.ownerClient || this.ownerJoined.has(room)) return room;
     let membership: unknown;
     try {
       membership = (
@@ -114,8 +94,7 @@ export class Matrix {
       if (error.errcode === "M_NOT_FOUND") return room;
       throw error;
     }
-    if (membership === "invite")
-      await this.ownerAPI(`/_matrix/client/v3/join/${encodeURIComponent(room)}`, "POST");
+    if (membership === "invite") await this.ownerClient.joinRoom(room);
     if (membership === "invite" || membership === "join") this.ownerJoined.add(room);
     return room;
   }
@@ -213,13 +192,13 @@ export class Matrix {
     transaction: string,
     timestamp?: number,
   ) {
-    if (sender === this.config.bridge.owner && this.ownerToken) {
+    if (sender === this.config.bridge.owner && this.ownerClient) {
       await this.joinOwner(room);
-      const result = await this.ownerAPI(
-        `/_matrix/client/v3/rooms/${encodeURIComponent(room)}/send/${encodeURIComponent(type)}/${encodeURIComponent(transaction)}`,
+      const result = await this.ownerClient.doRequest(
         "PUT",
+        `/_matrix/client/v3/rooms/${encodeURIComponent(room)}/send/${encodeURIComponent(type)}/${encodeURIComponent(transaction)}`,
+        timestamp ? { ts: timestamp } : undefined,
         { ...content, "fi.mau.double_puppet_source": "matrix-wechat" },
-        timestamp,
       );
       if (!result.event_id) throw new Error("Matrix owner send returned no event ID");
       return result.event_id;

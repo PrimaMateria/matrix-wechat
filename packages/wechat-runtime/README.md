@@ -39,7 +39,7 @@ The typed tRPC API at `/trpc` exposes status, contacts, groups, conversations, r
 
 Group responses include `joined` when the cached native roster and account contact are available. System XML is normalized into readable message text and a `system.type` such as `payment_reminder`; native XML and payment action URLs are not part of the public response.
 
-`WECHAT_WEB_UI` defaults to `true`. Set it to `false` to disable the separate web UI/HTTP listener on `18742`; the authenticated API remains available. The standalone launcher loads the repository `.env` if present and accepts exported `WECHAT_API_TOKEN` and `WECHAT_WEB_UI` overrides. It publishes only the web UI port. Use the root [Compose configuration](../../compose.yaml) for a bridge/runtime deployment on a shared network.
+`WECHAT_WEB_UI` defaults to `true`. Set it to `false` to disable the separate web UI/HTTP listener on `18742`; the authenticated API remains available. The standalone launcher loads `WECHAT_*` and `TZ` settings from the repository `.env` if present and accepts exported `WECHAT_API_TOKEN` and `WECHAT_WEB_UI` overrides. Matrix credentials stay out of the runtime container. It publishes only the web UI port. Use the root [Compose configuration](../../compose.yaml) for a bridge/runtime deployment on a shared network.
 
 The web UI also exposes a local HTTP API:
 

@@ -35,3 +35,4 @@ services:
     environment:
       TZ: UTC
       WECHAT_API_TOKEN: ${WECHAT_API_TOKEN:?Set WECHAT_API_TOKEN in .env}
+      MATRIX_OWNER_AS_TOKEN: ${MATRIX_OWNER_AS_TOKEN:-}
