@@ -30,7 +30,6 @@ type PrepareInvocation = InvocationContext & {
 };
 type StepInvocation = InvocationContext & { statement?: PreparedStatement };
 type CloseInvocation = InvocationContext & { dbId?: string; connection?: DatabaseConnection };
-type PointerInvocation = InvocationContext & { output?: NativePointer };
 type FileInvocation = InvocationContext & {
   thread?: number;
   source?: StdString;
@@ -503,29 +502,10 @@ function scanQR() {
 // Executed inside Frida; input and callback lifetimes are retained explicitly.
 const outboundPending = new Map<string, PendingSend>();
 let outboundSequence = 0;
-const outboundQueue: (() => void)[] = [];
-let drainingOutbound = false;
-Interceptor.attach(base.add(0x60421e0), {
-  onEnter(this: PointerInvocation, a) {
-    this.output = a[0];
-  },
-  onLeave(this: PointerInvocation) {
-    if (!this.output || drainingOutbound || !outboundQueue.length) return;
-    try {
-      const ctx = this.output.readPointer();
-      if (ctx.isNull() || ctx.add(0x28).readPointer().isNull()) return;
-    } catch (_) {
-      return;
-    }
-    const job = outboundQueue.shift();
-    drainingOutbound = true;
-    try {
-      job?.();
-    } finally {
-      drainingOutbound = false;
-    }
-  },
-});
+// Dispatch only API-owned work through the owning Qt event loop. A global onLeave
+// hook on the account-context factory tracks unrelated native work across
+// WeChat's stacks; both recorded image-send crashes underflowed Frida's leave
+// frame stack. Do not use that process-wide return hook as an application queue.
 function stdString(s: string): StdString {
   const n = unescape(encodeURIComponent(s)).length,
     object = Memory.alloc(24),
@@ -717,12 +697,13 @@ function outboundCall(payload: string, queued = false): Promise<NativeSendResult
       }
     };
     if (queued) {
-      if (outboundQueue.length >= 16) {
+      try {
+        session.dispatch(invoke);
+      } catch (error) {
         clearTimeout(timer);
-        reject(Error("Send queue full"));
-        return;
+        outboundPending.delete(callback.toString());
+        reject(error);
       }
-      outboundQueue.push(invoke);
     } else invoke();
   });
 }
@@ -735,13 +716,13 @@ function nativeQuote(
   reference: QuoteReference,
 ): Promise<NativeSendResult> {
   return new Promise<NativeSendResult>((resolve, reject) => {
-    if (outboundQueue.length >= 16) return reject(Error("Send queue full"));
+    if (session.pendingDispatches() >= 16) return reject(Error("Send queue full"));
     let cancelled = false;
     const timer = setTimeout(() => {
       cancelled = true;
       reject(Error("Native account thread did not accept the quote"));
     }, 30000);
-    outboundQueue.push(() => {
+    session.dispatch(() => {
       if (cancelled) return;
       clearTimeout(timer);
       const holders: NativePointer[] = [],

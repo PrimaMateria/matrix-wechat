@@ -214,6 +214,8 @@ export class Runtime {
     return this.operation(async () => {
       this.checkUploadReady(bytes.length);
       const token = randomUUID();
+      const started = Date.now() / 1000,
+        checksum = createHash("md5").update(bytes).digest("hex");
       const directory = join(data, "uploads"),
         path = join(directory, token + "." + (type === "image/jpeg" ? "jpg" : type!.slice(6)));
       const [database] = await this.store.databases();
@@ -242,13 +244,48 @@ export class Runtime {
       }
       const timer = setTimeout(() => void cleanup(), 120000);
       timer.unref();
-      const response = await this.native("sendimage", chat, path);
-      clearTimeout(timer);
-      await cleanup();
-      if (response.success !== true)
+      let response;
+      try {
+        response = await this.native("sendimage", chat, path);
+      } catch (error) {
+        // Delivery is uncertain after a lost callback. Keep the source for a
+        // possible queued native upload, bounded by the existing expiry timer.
+        throw error;
+      }
+      if (response.success !== true) {
+        clearTimeout(timer);
+        await cleanup();
         throw new APIError("send_failed", response.error_message || "WeChat rejected the image");
+      }
+      // This callback acknowledges queueing, not CDN upload completion. Retain
+      // both the original and native HttpResource cache until a server ID appears.
+      const finish = async () => {
+        for (let attempt = 0; attempt < 100 && !this.stopped; attempt++) {
+          await sleep(1000);
+          try {
+            const page = await this.operation(() =>
+              this.store.history({ chat_id: chat, limit: 50 }),
+            );
+            if (
+              page.messages.some(
+                (message) =>
+                  message.own &&
+                  message.kind === "image" &&
+                  message.timestamp >= started - 2 &&
+                  !message.id.startsWith("local:") &&
+                  attachmentChecksum(message) === checksum,
+              )
+            ) {
+              clearTimeout(timer);
+              await cleanup();
+              this.verified.add("send.image");
+              return;
+            }
+          } catch {}
+        }
+      };
+      void finish();
       this.dirty = true;
-      this.verified.add("send.image");
       return { success: true, acknowledgement: "native_handler" };
     });
   }
@@ -426,8 +463,15 @@ export class Runtime {
       stdio: frida.Stdio.Pipe,
     });
     this.session = await this.device.attach(this.pid);
-    this.session.detached.connect(() => {
+    this.session.detached.connect((reason, crash) => {
       if (!this.stopped) {
+        console.error(
+          "Native WeChat connection closed:",
+          JSON.stringify({
+            reason,
+            crash: crash ? { pid: crash.pid, summary: crash.summary } : null,
+          }),
+        );
         this.updateStatus({ state: "disconnected" });
         this.emit({ type: "connection.closed" });
       }

@@ -50,6 +50,37 @@ export function createSession(onChange: (kind: string) => void) {
     object.add(16).writePointer(context);
     return object;
   }
+  const dispatches = new Map<string, () => void>();
+  const dispatchSlot = new NativeCallback(
+    (operation, object) => {
+      const key = object.toString();
+      if (operation === 0) {
+        dispatches.delete(key);
+        free(object);
+      } else if (operation === 1) {
+        const job = dispatches.get(key);
+        dispatches.delete(key);
+        job?.();
+      }
+    },
+    "void",
+    ["int", "pointer", "pointer", "pointer", "pointer"],
+  );
+  function dispatch(job: () => void) {
+    if (dispatches.size >= 16) throw Error("Send queue full");
+    const context = controller();
+    if (context.isNull() || !loggedIn()) throw Error("Native account is not logged in");
+    const object = slot(context, dispatchSlot),
+      key = object.toString();
+    dispatches.set(key, job);
+    try {
+      queue(0, 0, context, object);
+    } catch (error) {
+      dispatches.delete(key);
+      free(object);
+      throw error;
+    }
+  }
   function login(mode: unknown) {
     if (mode !== "qr" && mode !== "prompt") throw Error("Invalid login action");
     const state = loginState();
@@ -162,6 +193,8 @@ export function createSession(onChange: (kind: string) => void) {
     },
   });
   return {
+    dispatch,
+    pendingDispatches: () => dispatches.size,
     login,
     logout,
     status: () => ({
