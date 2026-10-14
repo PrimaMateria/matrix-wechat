@@ -19,7 +19,7 @@ import {
   MultiFormatReader,
   RGBLuminanceSource,
 } from "@zxing/library";
-import * as frida from "frida";
+import type * as frida from "frida";
 import { PNG } from "pngjs";
 import {
   attachmentChecksum,
@@ -436,6 +436,7 @@ export class Runtime {
   async start() {
     if (!existsSync("/run/.containerenv") && !existsSync("/.dockerenv"))
       throw new APIError("container_required", "WeChat must run inside its container");
+    const frida = await import("frida");
     await mkdir(data, { recursive: true, mode: 0o700 });
     const executable = await this.executable();
     this.xvfb = Bun.spawn(
