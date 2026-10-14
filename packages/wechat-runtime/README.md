@@ -37,6 +37,8 @@ The Matrix bridge runs in a separate container and connects through the shared `
 
 The typed tRPC API at `/trpc` exposes status, contacts, groups, conversations, resumable history, recent messages, revocations, login and logout, text sends, and multipart image/file uploads. Reads are scoped to the current account, including its retained database shards; databases from a previous account are excluded. Authenticated `/assets/avatar`, `/assets/media`, `/assets/thumbnail`, and `/assets/qr` return binary bytes without base64 encoding. History carries public media checksums for echo correlation; native raw records stay inside this service.
 
+Group responses include `joined` when the cached native roster and account contact are available. System XML is normalized into readable message text and a `system.type` such as `payment_reminder`; native XML and payment action URLs are not part of the public response.
+
 `WECHAT_WEB_UI` defaults to `true`. Set it to `false` to disable the separate web UI/HTTP listener on `18742`; the authenticated API remains available. The standalone launcher loads the repository `.env` if present and accepts exported `WECHAT_API_TOKEN` and `WECHAT_WEB_UI` overrides. It publishes only the web UI port. Use the root [Compose configuration](../../compose.yaml) for a bridge/runtime deployment on a shared network.
 
 The web UI also exposes a local HTTP API:

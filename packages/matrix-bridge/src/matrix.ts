@@ -200,6 +200,11 @@ export class Matrix {
     await bot.setRoomTopic(room, topic);
     if (avatar !== undefined) await bot.setRoomAvatar(room, avatar);
   }
+  async powerLevels(room: string, content?: Record<string, any>): Promise<Record<string, any>> {
+    const bot = this.sdk.getIntent();
+    if (content) return bot.sendStateEvent(room, "m.room.power_levels", "", content);
+    return bot.matrixClient.getRoomStateEventContent(room, "m.room.power_levels", "");
+  }
   async send(
     sender: string,
     room: string,

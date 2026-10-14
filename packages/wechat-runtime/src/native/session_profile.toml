@@ -1,7 +1,7 @@
 # Native session ABI for the pinned WeChat Linux client.
 format_version = 1
 elf_sha256 = "2749535f299ba67feb8ef80cab898bb0531fa8f376b16f8a72db706811c84132"
-# Qt dispatch/ownership is verified; API logout from an active session awaits camera QR login.
+# Qt dispatch/ownership and API logout from an active session are verified.
 
 [controller]
 rva = "0xad41dc8"

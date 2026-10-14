@@ -104,6 +104,23 @@ test("native app subtype 62 tickles render the client title as a read-only syste
   expect(message.text).toBe("I tickled Friend & Co");
   expect(message.own).toBe(true);
 });
+test("payment system XML becomes a read-only notice without native action metadata", async () => {
+  const { store, chat, insert } = setup();
+  insert(
+    1,
+    303n,
+    '<?xml version="1.0"?><sysmsg type="paymsg"><content><![CDATA[你有一笔待接收的<_wc_custom_link_ href="weixin://wxpay/transfer/remindrcvmsg?transferid=private-id">转账</_wc_custom_link_>]]></content></sysmsg>',
+    10000,
+  );
+  const message = (await store.history({ chat_id: chat })).messages[0];
+  expect(message).toMatchObject({
+    kind: "system",
+    read_only: true,
+    system: { type: "payment_reminder" },
+    text: "你有一笔待接收的转账",
+  });
+  expect(message.text).not.toContain("weixin:");
+});
 test("initial history is not replayed as live events; inserts and ID changes are emitted once", async () => {
   const { store, db, table, insert } = setup();
   expect(await store.changes()).toEqual([]);
@@ -163,7 +180,7 @@ test("contacts, group roster, announcements and conversations use actual joins",
     contact = native.add("contact/contact.db");
   contact.run("CREATE TABLE contact(id INTEGER,username TEXT,nick_name TEXT,remark TEXT)");
   contact.run(
-    "INSERT INTO contact VALUES(1,'test_friend','Friend',''),(2,'test@chatroom','Group','')",
+    "INSERT INTO contact VALUES(1,'test_friend','Friend',''),(2,'test@chatroom','Group',''),(3,'test_self','Self','')",
   );
   contact.run("CREATE TABLE chat_room(id INTEGER,username TEXT)");
   contact.run("INSERT INTO chat_room VALUES(10,'test@chatroom')");
@@ -172,6 +189,9 @@ test("contacts, group roster, announcements and conversations use actual joins",
   contact.run("CREATE TABLE chat_room_info_detail(username_ TEXT,announcement_ TEXT)");
   contact.run("INSERT INTO chat_room_info_detail VALUES('test@chatroom','Announcement')");
   const groups = await store.groups();
+  expect(groups.groups[0].joined).toBe(false);
+  contact.run("INSERT INTO chatroom_member VALUES(10,3)");
+  expect((await store.groups()).groups[0].joined).toBe(true);
   expect(groups.groups[0].members?.[0].id).toBe("test_friend");
   expect(groups.groups[0].topic).toBe("Announcement");
   const sessions = native.add("session/session.db");

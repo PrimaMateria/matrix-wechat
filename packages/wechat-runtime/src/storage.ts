@@ -127,6 +127,7 @@ export class Storage {
     const byID = new Map(
       contacts.filter((c) => c.native?.id).map((c) => [String(c.native!.id), c]),
     );
+    const rosters = new Set<string>();
     for (const d of await this.databases()) {
       if (!basename(d.path).startsWith("contact")) continue;
       const tables = await this.tables(d);
@@ -149,14 +150,18 @@ export class Storage {
             g.native = { ...g.native, detail: r };
           }
         }
-      if (tables.has("chatroom_member"))
+      if (tables.has("chatroom_member")) {
+        for (const username of rooms.values()) rosters.add(username);
         for (const r of await this.query(d, "SELECT * FROM chatroom_member")) {
           const g = groups.get(rooms.get(String(r.room_id)) || ""),
             m = byID.get(String(r.member_id));
           if (g && m) g.members!.push(m);
         }
+      }
     }
     for (const group of groups.values()) {
+      if (rosters.has(group.id) && contacts.some((c) => c.id === this.account()))
+        group.joined = group.members!.some((m) => m.id === this.account());
       if (!group.name)
         group.name =
           group.members
@@ -256,6 +261,24 @@ export class Storage {
     )
       m.text = m.text.slice(sender.length + 2);
     const root = readable ? xml(content) : undefined;
+    const system = root?.sysmsg;
+    if (system) {
+      m.kind = "system";
+      m.read_only = true;
+      m.system = {
+        type:
+          system.type === "paymsg"
+            ? "payment_reminder"
+            : system.type === "revokemsg"
+              ? "revocation"
+              : "notice",
+      };
+      const body = system.content || system.revokemsg?.replacemsg || system.replacemsg;
+      const text = typeof body === "string" ? body.replace(/<[^>]*>/g, "").trim() : "";
+      const decodedText = text ? xml(`<text>${text}</text>`)?.text : undefined;
+      m.text =
+        typeof decodedText === "string" && decodedText ? decodedText : "WeChat system message";
+    }
     const app = root?.msg?.appmsg || root?.appmsg;
     if (type === 49 && app) {
       if (String(app.type) === "6") m.kind = "file";

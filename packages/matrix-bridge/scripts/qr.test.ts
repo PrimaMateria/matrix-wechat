@@ -168,3 +168,38 @@ test("logout posts one owner notice after confirmation, and a failed logout post
   await f.bridge["status"]();
   expect(f.sends).toHaveLength(notices);
 });
+test("portal sending permissions restore exactly after logout, recovery and membership changes", async () => {
+  const f = await fixture();
+  const levels = new Map<string, Record<string, any>>();
+  for (const chat of ["contact", "room@chatroom"]) {
+    const room = `!${chat}:example.com`;
+    f.bridge.store.addPortal("self", chat, room);
+    levels.set(room, {
+      users: { [f.bridge.config.bridge.owner]: 17, "@other:example.com": 2 },
+      events: { "m.room.message": 0 },
+    });
+  }
+  f.bridge.matrix.powerLevels = async (room, content) => {
+    if (content) levels.set(room, structuredClone(content));
+    return structuredClone(levels.get(room)!);
+  };
+  Object.assign(f.snapshot.status, { state: "logged_in", account: { id: "self" } });
+  await f.bridge["status"]();
+  f.snapshot.status.state = "logging_out";
+  await f.bridge["status"]();
+  for (const level of levels.values())
+    expect(level.users).toMatchObject({
+      [f.bridge.config.bridge.owner]: -1,
+      "@other:example.com": 2,
+    });
+  f.snapshot.status.state = "logged_in";
+  await f.bridge["status"]();
+  for (const level of levels.values()) expect(level.users[f.bridge.config.bridge.owner]).toBe(17);
+  f.bridge["groups"].set("room@chatroom", { id: "room@chatroom", name: "Group", joined: false });
+  await f.bridge["status"]();
+  expect(levels.get("!room@chatroom:example.com")!.users[f.bridge.config.bridge.owner]).toBe(-1);
+  expect(levels.get("!contact:example.com")!.users[f.bridge.config.bridge.owner]).toBe(17);
+  f.bridge["groups"].get("room@chatroom")!.joined = true;
+  await f.bridge["status"]();
+  expect(levels.get("!room@chatroom:example.com")!.users[f.bridge.config.bridge.owner]).toBe(17);
+});

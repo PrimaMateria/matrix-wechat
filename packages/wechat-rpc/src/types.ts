@@ -8,6 +8,7 @@ export interface Contact {
 export interface Group extends Contact {
   topic?: string;
   members?: Contact[];
+  joined?: boolean;
 }
 export interface Conversation {
   id: string;
@@ -33,6 +34,7 @@ export interface Message {
   link?: { url: string; title: string; description: string; source?: string; thumbnail?: boolean };
   read_only?: boolean;
   payment?: { title: string; amount?: string; description?: string };
+  system?: { type: "payment_reminder" | "revocation" | "notice" };
   location?: { latitude: number; longitude: number; label: string };
   media?: {
     id: string;

@@ -44,6 +44,8 @@ The bridge invites its configured owner to a management room. Login is command b
 bun packages/wechat-runtime/scripts/adb-login.ts --watch
 ```
 
+Portal history remains readable while WeChat is unavailable, logged out, or using another account, but the owner cannot send new Matrix messages into those portals. Sending is also disabled when the native group roster confirms that the current account is no longer a member. The bridge restores the owner's previous power level when access returns; the management room stays writable for login/logout commands. Missing or incomplete roster data does not establish that a user was removed.
+
 The watcher uses the local web API and requires the web UI listener to be enabled. See [runtime documentation](packages/wechat-runtime/README.md) for standalone use and the pinned client build.
 
 ## Bridged behavior

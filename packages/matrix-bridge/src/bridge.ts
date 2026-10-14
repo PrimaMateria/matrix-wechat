@@ -124,7 +124,14 @@ export class WeChatBridge {
     return !encrypted;
   }
   private async status() {
-    const snapshot = await this.runtime.rpc.status.query();
+    let snapshot;
+    try {
+      snapshot = await this.runtime.rpc.status.query();
+    } catch (error) {
+      this.connection = { state: "disconnected" };
+      await this.portalPermissions();
+      throw error;
+    }
     const previous = this.account;
     this.connection = snapshot.status;
     if (previous !== this.account) {
@@ -134,6 +141,7 @@ export class WeChatBridge {
       this.joined.clear();
     }
     const state = this.connection.state;
+    await this.portalPermissions();
     // Preserve the last completed state while native logout is still pending.
     if (state === "logging_out") return false;
     const previousState = this.store.meta("connection_state");
@@ -162,6 +170,46 @@ export class WeChatBridge {
     }
     this.store.setMeta("connection_state", state);
     return logoutNotice;
+  }
+  private portalWritable(portal: Portal) {
+    const joined =
+      this.groups.get(portal.chat)?.joined ?? JSON.parse(portal.metadata || "{}").joined;
+    return (
+      this.connection.state === "logged_in" && portal.account === this.account && joined !== false
+    );
+  }
+  private async portalPermissions() {
+    for (const portal of this.store.all<Portal>("SELECT * FROM portals")) {
+      try {
+        const writable = this.portalWritable(portal);
+        const key = `owner_power:${portal.room}`;
+        const saved = this.store.meta(key);
+        let previous: { level: number | null; applied: boolean } | undefined = saved
+          ? JSON.parse(saved)
+          : undefined;
+        if ((writable && !previous) || (!writable && previous?.applied)) continue;
+        const levels = await this.matrix.powerLevels(portal.room);
+        levels.users = { ...levels.users };
+        if (!writable) {
+          if (!previous) {
+            previous = { level: levels.users[this.config.bridge.owner] ?? null, applied: false };
+            this.store.setMeta(key, JSON.stringify(previous));
+          }
+          const thresholds = [
+            levels.events_default ?? 0,
+            levels.state_default ?? 50,
+            ...Object.values(levels.events || {}),
+          ] as number[];
+          levels.users[this.config.bridge.owner] = Math.min(0, ...thresholds) - 1;
+        } else if (previous!.level === null) delete levels.users[this.config.bridge.owner];
+        else levels.users[this.config.bridge.owner] = previous!.level;
+        await this.matrix.powerLevels(portal.room, levels);
+        this.store.setMeta(key, writable ? "" : JSON.stringify({ ...previous, applied: true }));
+      } catch (error) {
+        this.lastError = errorCode(error) || "portal_permissions_failed";
+        console.error("Portal permissions:", this.lastError);
+      }
+    }
   }
   private async loginQR(event: MatrixEvent) {
     for (let attempt = 0; attempt < 20; attempt++) {
@@ -290,6 +338,7 @@ export class WeChatBridge {
         topic: group?.topic || "",
         avatar: avatar ?? previous.avatar,
         members,
+        joined: group?.joined ?? previous.joined,
       });
       if (portal.metadata !== metadata) {
         await this.matrix.metadata(portal.room, name, group?.topic || "", avatar);
@@ -307,6 +356,7 @@ export class WeChatBridge {
         );
       }
     }
+    await this.portalPermissions();
     // Existing participant profiles can change without any roster change.
     for (const ghost of this.store.all<{ id: string }>(
       "SELECT id FROM ghosts WHERE account=?",
@@ -398,7 +448,7 @@ export class WeChatBridge {
       existing?.sender ||
       (message.kind === "system" || !message.sender_id
         ? this.matrix.bot
-        : message.own && this.matrix.ownerToken
+        : message.own && this.matrix.ownerToken && this.portalWritable(portal)
           ? this.config.bridge.owner
           : await this.joinGhost(portal.room, message.sender_id));
     const converted = await this.content(message);
@@ -662,6 +712,8 @@ export class WeChatBridge {
       throw new APIError("not_ready", "WeChat is disconnected; send is waiting for login");
     if (portal.account !== this.account)
       throw new Error("This room is not connected to the current WeChat account");
+    if (!this.portalWritable(portal))
+      throw new Error("You are no longer a member of this WeChat chat");
     // At most one unresolved native send per chat makes identical-send correlation safe.
     if (
       this.store
