@@ -3,6 +3,7 @@ import { z } from "zod";
 const address = z.string().regex(/^0x[0-9a-f]+$/i);
 const instructionBytes = z.string().regex(/^(?:[0-9a-f]{2})+$/i);
 const hash = z.string().regex(/^[0-9a-f]{64}$/);
+const nativeFunction = z.object({ rva: address, validation_bytes: instructionBytes });
 
 export const storageProfileSchema = z
   .object({
@@ -25,9 +26,28 @@ export const outboundProfileSchema = z
   .object({
     format_version: z.literal(1),
     elf_sha256: hash,
-    functions: z.record(z.string(), z.object({ rva: address, validation_bytes: instructionBytes })),
+    functions: z.record(z.string(), nativeFunction),
   })
   .passthrough();
 
+export const sessionProfileSchema = z.object({
+  format_version: z.literal(1),
+  elf_sha256: hash,
+  controller: z.object({ rva: address, vtable: address }),
+  login: z.object({ vtable: address, window_vtable: address, model_offset: z.int().positive() }),
+  functions: z.object({
+    model_constructor: nativeFunction,
+    model_destructor: nativeFunction,
+    model_state_changed: nativeFunction,
+    allocate: nativeFunction,
+    free: nativeFunction,
+    queue: nativeFunction,
+    qr_slot: nativeFunction,
+    prompt_slot: nativeFunction,
+    logout: nativeFunction,
+  }),
+});
+
 export type StorageProfile = z.infer<typeof storageProfileSchema>;
 export type OutboundProfile = z.infer<typeof outboundProfileSchema>;
+export type SessionProfile = z.infer<typeof sessionProfileSchema>;

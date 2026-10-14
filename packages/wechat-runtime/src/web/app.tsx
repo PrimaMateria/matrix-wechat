@@ -89,6 +89,16 @@ function PaymentCard({ message }: { message: Message }) {
   );
 }
 
+const statusLabel: Record<Status["state"], string> = {
+  starting: "Connecting…",
+  signing_in: "Signing in…",
+  logging_out: "Logging out…",
+  awaiting_scan: "Sign in",
+  awaiting_confirmation: "Confirm on your phone",
+  logged_in: "Connected",
+  disconnected: "Disconnected",
+};
+
 async function api<T>(
   method: string,
   params: Record<string, unknown> = {},
@@ -152,6 +162,11 @@ function App() {
     (id === "filehelper" ? "File Transfer" : id || "Unknown sender");
   function report(e: unknown) {
     if (mounted.current) setError(e instanceof Error ? e.message : "Request failed");
+  }
+  function updateQR(next = "") {
+    if (qrRef.current) URL.revokeObjectURL(qrRef.current);
+    qrRef.current = next;
+    if (mounted.current) setQR(next);
   }
   async function conversations() {
     const before = account.current;
@@ -245,19 +260,16 @@ function App() {
           if (s.state === "logged_in") await conversations();
         }
         setStatus(s);
+        let nextQR = "";
         if (s.state === "awaiting_scan") {
           const r = await fetch("/qr.png", { cache: "no-store" });
           if (r.ok) {
-            const next = URL.createObjectURL(await r.blob());
-            if (qrRef.current) URL.revokeObjectURL(qrRef.current);
-            qrRef.current = next;
-            setQR(next);
+            const blob = await r.blob();
+            if (!mounted.current) return;
+            nextQR = URL.createObjectURL(blob);
           }
-        } else {
-          if (qrRef.current) URL.revokeObjectURL(qrRef.current);
-          qrRef.current = "";
-          setQR("");
         }
+        if (mounted.current) updateQR(nextQR);
       } catch (e) {
         report(e);
       } finally {
@@ -282,10 +294,6 @@ function App() {
         void poll();
         return;
       }
-      if (event.type === "login.confirmation_required") {
-        setStatus({ state: "awaiting_confirmation" });
-        return;
-      }
       if (event.type === "connection.closed") {
         setStatus({ state: "disconnected" });
         return;
@@ -297,7 +305,7 @@ function App() {
       mounted.current = false;
       clearInterval(timer);
       stream.close();
-      if (qrRef.current) URL.revokeObjectURL(qrRef.current);
+      updateQR();
     };
   }, []);
   useEffect(() => {
@@ -308,12 +316,13 @@ function App() {
     setReply(undefined);
     void history();
   }, [selected]);
-  async function retryLogin(mode: "saved" | "qr") {
+  async function sessionAction(action: "login" | "logout", mode?: "prompt" | "qr") {
     if (loginBusy) return;
     setLoginBusy(true);
     setError("");
     try {
-      await api("login/retry", { mode }, true);
+      await api(action, mode ? { mode } : {}, true);
+      setStatus(await api<Status>("status"));
     } catch (e) {
       report(e);
     } finally {
@@ -367,20 +376,15 @@ function App() {
     <>
       <header>
         <h1>WeChat</h1>
-        <span className="status">
-          {status.state === "logged_in"
-            ? "Connected"
-            : status.state === "awaiting_confirmation"
-              ? "Confirm on phone"
-              : status.state === "disconnected"
-                ? "Disconnected"
-                : status.state === "signing_in"
-                  ? "Signing in…"
-                  : status.state === "starting"
-                    ? "Connecting…"
-                    : "Sign in"}
-        </span>
-        {status.state === "logged_in" && <button onClick={() => void refresh()}>Refresh</button>}
+        <span className="status">{statusLabel[status.state]}</span>
+        {status.state === "logged_in" && (
+          <>
+            <button onClick={() => void refresh()}>Refresh</button>
+            <button disabled={loginBusy || sending} onClick={() => void sessionAction("logout")}>
+              Log out
+            </button>
+          </>
+        )}
       </header>
       {error && (
         <div className="error" role="alert">
@@ -392,7 +396,7 @@ function App() {
       )}
       {status.state !== "logged_in" ? (
         <section className="login">
-          <h2>{status.state === "awaiting_confirmation" ? "Confirm on your phone" : "Sign in"}</h2>
+          <h2>{statusLabel[status.state]}</h2>
           {status.state === "awaiting_confirmation" ? (
             <>
               <p>Open WeChat on your phone to approve this login.</p>
@@ -404,18 +408,22 @@ function App() {
             </>
           ) : (
             <p>
-              {status.state === "disconnected"
-                ? "WeChat disconnected."
-                : status.state === "signing_in"
-                  ? "Signing in…"
-                  : "Connecting…"}
+              {status.state === "logging_out"
+                ? "Waiting for WeChat to end the session…"
+                : statusLabel[status.state]}
             </p>
           )}
           <div>
-            <button disabled={loginBusy} onClick={() => void retryLogin("saved")}>
-              Request again
+            <button
+              disabled={loginBusy || status.state === "logging_out"}
+              onClick={() => void sessionAction("login", "prompt")}
+            >
+              Request phone confirmation
             </button>{" "}
-            <button disabled={loginBusy} onClick={() => void retryLogin("qr")}>
+            <button
+              disabled={loginBusy || status.state === "logging_out"}
+              onClick={() => void sessionAction("login", "qr")}
+            >
               Use QR code
             </button>
           </div>

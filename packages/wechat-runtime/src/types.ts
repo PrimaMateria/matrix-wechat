@@ -4,6 +4,7 @@ export interface Database {
   id: string;
   path: string;
   readable: boolean;
+  active?: boolean;
   encrypted: boolean;
   error?: string;
 }

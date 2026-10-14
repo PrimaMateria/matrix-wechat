@@ -1,3 +1,5 @@
+import { createSession } from "./session";
+
 /* Injected into the exact pinned WeChat image. Keys remain in target memory. */
 
 const base = Process.mainModule.base;
@@ -89,8 +91,7 @@ function leaveInternal() {
   if (n) internalThreads.set(tid, n);
   else internalThreads.delete(tid);
 }
-let loginModel = nullPtr,
-  revision = 0;
+let revision = 0;
 const signatures = {
   libversion: ["pointer", []],
   open_v2: ["int", ["pointer", "pointer", "int", "pointer"]],
@@ -341,65 +342,7 @@ for (const name of ["close", "close_v2"])
       }
     },
   });
-const loginVtable = base.add(0xa6f0ac8);
-const nativeNew = new NativeFunction(base.add(0xa674ee0), "pointer", ["ulong"]);
-const queueSlot = new NativeFunction(
-  base.add(0xa50af00),
-  "void",
-  ["int", "int", "pointer", "pointer"],
-  { exceptions: "steal" },
-);
-function loginState() {
-  if (loginModel.isNull() || !loginModel.readPointer().equals(loginVtable))
-    return { active: false };
-  return {
-    active: true,
-    view: loginModel.add(0x40).readU32(),
-    phase: loginModel.add(0x44).readU32(),
-    request: loginModel.add(0x4c).readU32(),
-    can_resume: loginModel.add(0x338).readU8() !== 0,
-  };
-}
-function queueLogin(mode: unknown) {
-  if (loginModel.isNull() || !loginModel.readPointer().equals(loginVtable))
-    return { queued: false };
-  if (mode !== "qr" && mode !== "saved") throw Error("Invalid login action");
-  if (mode === "saved" && !loginState().can_resume) return { queued: false, reason: "qr_required" };
-  const window = loginModel.sub(0x278);
-  if (!window.readPointer().equals(base.add(0xa6f0b50))) throw Error("Invalid login window");
-  const slot = nativeNew(24);
-  slot.writeU32(1);
-  slot.add(4).writeU32(0);
-  slot.add(8).writePointer(base.add(mode === "qr" ? 0x4874550 : 0x4874710));
-  slot.add(16).writePointer(window);
-  queueSlot(0, 0, window, slot);
-  return { queued: true };
-}
-Interceptor.attach(base.add(0x487f250), {
-  onEnter(this: PointerInvocation, a) {
-    this.output = a[0];
-  },
-  onLeave(this: PointerInvocation) {
-    if (!this.output) return;
-    loginModel = this.output;
-    send({ type: "login_state", state: loginState() });
-    hint("login_view_open", {});
-  },
-});
-Interceptor.attach(base.add(0x48808e0), {
-  onEnter(a) {
-    if (loginModel.equals(a[0])) {
-      loginModel = nullPtr;
-      send({ type: "login_state", state: { active: false } });
-      hint("login_view_closed", {});
-    }
-  },
-});
-Interceptor.attach(base.add(0x4882e50), {
-  onEnter(a) {
-    if (a[0].equals(loginModel)) send({ type: "login_state", state: loginState() });
-  },
-});
+const session = createSession((kind) => hint(kind, {}));
 function sqlQuery(db: NativePointer, sql: string, maxRows: number, allowWrite = false) {
   const holder = Memory.alloc(Process.pointerSize);
   holder.writePointer(nullPtr);
@@ -1017,12 +960,12 @@ rpc.exports = {
       true,
     );
   },
-  login: queueLogin,
+  login: session.login,
+  logout: session.logout,
   status() {
     return {
       sqlite_version: text(native.libversion()),
-      login_view_active: !loginModel.isNull(),
-      login: loginState(),
+      ...session.status(),
       revision,
       databases: connections.size,
     };
@@ -1032,6 +975,9 @@ rpc.exports = {
     enterInternal();
     try {
       const unique = new Map<string, DatabaseConnection>();
+      const activePaths = new Set(
+        Array.from(connections.values(), (connection) => connection.path),
+      );
       for (const c of [...retained.values(), ...connections.values()]) {
         const old = unique.get(c.path);
         if (!old || c.key) unique.set(c.path, c);
@@ -1045,6 +991,7 @@ rpc.exports = {
           path: c.path,
           encrypted: !!c.key,
           readable: c.readable,
+          active: activePaths.has(c.path),
           error: c.error,
           key_captured: !!c.key,
           cipher_settings: c.cipher,
@@ -1061,20 +1008,6 @@ rpc.exports = {
     enterInternal();
     try {
       return sqlQuery(reader(c), sql, Math.max(1, Math.min(maxRows || 1000, 50001)));
-    } finally {
-      leaveInternal();
-    }
-  },
-  dispose() {
-    enterInternal();
-    try {
-      for (const c of new Set([...connections.values(), ...retained.values()])) {
-        closeReader(c);
-        if (c.key) c.key.writeByteArray(new ArrayBuffer(c.keyLength));
-      }
-      connections.clear();
-      retained.clear();
-      statements.clear();
     } finally {
       leaveInternal();
     }

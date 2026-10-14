@@ -63,7 +63,7 @@ export function createHandler(backend: Backend, webRoot = join(import.meta.dir, 
     try {
       if (
         request.method === "POST" &&
-        ["/api/send-image", "/api/send-file", "/api/send", "/api/login/retry"].includes(
+        ["/api/send-image", "/api/send-file", "/api/send", "/api/login", "/api/logout"].includes(
           url.pathname,
         )
       ) {
@@ -206,7 +206,10 @@ export function createHandler(backend: Backend, webRoot = join(import.meta.dir, 
         if (params.limit !== undefined) params.limit = Number(params.limit);
         return json(await backend.dispatch(method, params));
       }
-      if (request.method === "POST" && ["/api/send", "/api/login/retry"].includes(url.pathname)) {
+      if (
+        request.method === "POST" &&
+        ["/api/send", "/api/login", "/api/logout"].includes(url.pathname)
+      ) {
         if (request.headers.get("Content-Type")?.split(";")[0] !== "application/json")
           return json({ error: { code: "invalid_params", message: "JSON is required" } }, 415);
         const body = await readBody(request, 131072, "Message is too large");
@@ -217,9 +220,7 @@ export function createHandler(backend: Backend, webRoot = join(import.meta.dir, 
         } catch {
           throw new APIError("invalid_params", "Invalid JSON request");
         }
-        return json(
-          await backend.dispatch(url.pathname === "/api/send" ? "send" : "login.retry", params),
-        );
+        return json(await backend.dispatch(url.pathname.slice(5), params));
       }
       if (request.method === "GET" && ["/", "/app.js", "/app.css"].includes(url.pathname)) {
         const file = Bun.file(

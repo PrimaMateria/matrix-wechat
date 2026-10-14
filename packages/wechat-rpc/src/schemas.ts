@@ -10,4 +10,4 @@ export const textMessageSchema = z.object({
     .optional(),
 });
 
-export const loginRequestSchema = z.object({ mode: z.enum(["saved", "qr"]) });
+export const loginRequestSchema = z.object({ mode: z.enum(["prompt", "qr"]) });

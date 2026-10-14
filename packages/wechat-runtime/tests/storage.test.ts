@@ -8,13 +8,13 @@ class Fixture implements NativeDB {
   connections = new Map<string, SQLite>();
   visible: Database[] = [];
   truncated = false;
-  add(name: string) {
+  add(name: string, account = "test_self") {
     const db = new SQLite(":memory:", { safeIntegers: true }),
       id = String(this.connections.size + 1);
     this.connections.set(id, db);
     this.visible.push({
       id,
-      path: "/fixture/db_storage/" + name,
+      path: `/fixture/xwechat_files/${account}_1234/db_storage/${name}`,
       encrypted: true,
       readable: true,
     });
@@ -66,6 +66,30 @@ test("native IDs remain exact and history identifies own messages", async () => 
   expect(page.messages[0].id).toBe("9223372036854775806");
   expect(page.messages[0].own).toBe(true);
   expect(page.messages[0].text).toBe("hello");
+});
+test("account switches isolate retained databases and history", async () => {
+  const { native, chat, table, insert } = setup();
+  insert(1, 101n, "previous account");
+  const db = native.add("message/message_0.db", "next_self");
+  db.run("CREATE TABLE Name2Id(user_name TEXT,is_session INTEGER)");
+  db.run("INSERT INTO Name2Id VALUES('test_friend',1),('next_self',1)");
+  db.run(
+    "CREATE TABLE " +
+      table +
+      "(local_id INTEGER PRIMARY KEY,server_id INTEGER,local_type INTEGER,real_sender_id INTEGER,create_time INTEGER,message_content TEXT,WCDB_CT_message_content INTEGER)",
+  );
+  db.run("INSERT INTO " + table + " VALUES(1,202,1,2,100,'current account',0)");
+  let account = "test_self";
+  const store = new Storage(native, () => account);
+  expect((await store.history({ chat_id: chat })).messages.map((m) => m.text)).toEqual([
+    "previous account",
+  ]);
+  account = "next_self";
+  expect((await store.history({ chat_id: chat })).messages).toMatchObject([
+    { id: "202", text: "current account", account_id: "next_self" },
+  ]);
+  account = "";
+  await expect(store.history({ chat_id: chat })).rejects.toMatchObject({ code: "not_ready" });
 });
 test("native app subtype 62 tickles render the client title as a read-only system message", async () => {
   const { store, chat, insert } = setup();
@@ -213,7 +237,6 @@ test("bridge keyset history crosses 50,000 rows and resumes equal timestamps acr
       "(local_id INTEGER PRIMARY KEY,server_id INTEGER,local_type INTEGER,real_sender_id INTEGER,create_time INTEGER,message_content TEXT,WCDB_CT_message_content INTEGER)",
   );
   second.run("INSERT INTO " + table + " VALUES(1,9223372036854775806,1,2,100,'other shard',0)");
-  expect(await store.bridgeChats()).toEqual([chat]);
   let cursor: string | undefined,
     count = 0;
   const ids = new Set<string>();

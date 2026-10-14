@@ -134,7 +134,10 @@ export class WeChatBridge {
       this.joined.clear();
     }
     const state = this.connection.state;
+    // Preserve the last completed state while native logout is still pending.
+    if (state === "logging_out") return false;
     const previousState = this.store.meta("connection_state");
+    let logoutNotice = false;
     if (
       previousState === "logged_in" &&
       state !== "logged_in" &&
@@ -143,11 +146,12 @@ export class WeChatBridge {
       const generation = Number(this.store.meta("connection_generation") || "0") + 1;
       await this.notice(
         this.management,
-        "WeChat logged out. Live sync and sends are paused; unsent messages remain queued. Send login prompt to resume your saved account, or login qr for a new QR code.",
+        "WeChat logged out. Live sync and sends are paused; unsent messages remain queued. Send login prompt to request phone confirmation, or login qr for a new QR code.",
         `logout:${generation}`,
       );
       this.store.setMeta("connection_generation", String(generation));
       this.store.setMeta("login_required", "true");
+      logoutNotice = true;
     } else if (state === "logged_in" && this.store.meta("login_required")) {
       await this.notice(
         this.management,
@@ -157,6 +161,7 @@ export class WeChatBridge {
       this.store.setMeta("login_required", "");
     }
     this.store.setMeta("connection_state", state);
+    return logoutNotice;
   }
   private async loginQR(event: MatrixEvent) {
     for (let attempt = 0; attempt < 20; attempt++) {
@@ -561,18 +566,18 @@ export class WeChatBridge {
     let response = "";
     if (command === "help")
       response =
-        "Commands: help, login [qr|prompt|saved], status, capabilities, list contacts, list groups, start-chat <WeChat ID>, sync. Native mentions are received; outgoing text does not construct native mentions. Leaving a Matrix room does not leave the WeChat group.";
+        "Commands: help, login [qr|prompt], logout, status, capabilities, list contacts, list groups, start-chat <WeChat ID>, sync. Native mentions are received; outgoing text does not construct native mentions. Leaving a Matrix room does not leave the WeChat group.";
     else if (command === "status")
       response = `WeChat: ${this.connection.state}. Rooms: ${this.store.portals(this.account).length}. History imports pending: ${this.store.portals(this.account).filter((p) => !p.imported).length}.${this.lastError ? ` Last reconciliation error: ${this.lastError}.` : ""}`;
     else if (command === "capabilities") response = JSON.stringify(capabilities, null, 2);
     else if (command === "login") {
       const requested = args[0] || "prompt";
-      if (!["saved", "prompt", "qr"].includes(requested))
+      if (requested !== "prompt" && requested !== "qr")
         throw new Error("Use login qr or login prompt");
       const snapshot = await this.runtime.rpc.status.query();
       if (snapshot.status.state === "logged_in") response = "WeChat is already logged in.";
       else {
-        const mode = requested === "qr" ? "qr" : "saved";
+        const mode = requested;
         await this.runtime.rpc.login.mutate({ mode });
         if (mode === "qr" && (await this.loginQR(event))) return;
         response =
@@ -580,6 +585,10 @@ export class WeChatBridge {
             ? "WeChat is already logged in."
             : "Phone confirmation requested. Approve the login in WeChat on your phone.";
       }
+    } else if (command === "logout") {
+      await this.runtime.rpc.logout.mutate();
+      if (await this.status()) return;
+      response = "WeChat is logged out. Use login qr or login prompt to sign in again.";
     } else if (command === "list" && args[0] === "contacts")
       response =
         (await this.contactsList()).map((c) => `${c.id}: ${c.name}`).join("\n") ||

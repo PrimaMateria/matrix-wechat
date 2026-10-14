@@ -7,7 +7,7 @@ packages/wechat-runtime/scripts/container.sh build
 packages/wechat-runtime/scripts/container.sh start
 ```
 
-Open http://127.0.0.1:18742/. Login is initiated explicitly through the UI or bridge commands. Set `WECHAT_AUTO_LOGIN=true` to opt into automatic saved-account login attempts. WeChat may require phone confirmation. Without a saved account, the page displays the client's QR code.
+Open http://127.0.0.1:18742/. Login is initiated explicitly through the UI or bridge commands. Set `WECHAT_AUTO_LOGIN=true` to opt into automatic phone-confirmation requests. WeChat may require phone confirmation. Without a remembered account, the page displays the client's QR code.
 
 The Dockerfile downloads the original vendor AppImage from the repository's [pinned client release](https://github.com/yamada-sexta/matrix-wechat/releases/tag/wechat-client-4.1.13-4526180b), retries transient failures up to three times, checks the SHA-256 from the native ABI profile, and extracts and verifies the executable during build. `WECHAT_APPIMAGE_URL` can override the download mirror while retaining the same hash pin. The expected AppImage hash is `4526180bca980128791599af122ff4795002a5715a510f6a65480e2be6874244`. A changed download fails the build. Both hashes are checked again before startup. The client installation is read-only to the runtime user; the image contains no account data.
 
@@ -35,11 +35,13 @@ bun run --cwd packages/wechat-runtime build
 
 The Matrix bridge runs in a separate container and connects through the shared `wechat-rpc` client. Set `WECHAT_API_TOKEN` to enable the authenticated API on port `18743`; every request requires `Authorization: Bearer <token>`. Without a token this listener is disabled. Compose supplies the same token to both services and keeps this port internal.
 
-The typed tRPC API at `/trpc` exposes status, contacts, groups, conversations, resumable history, recent messages, revocations, login retry, text sends, and multipart image/file uploads. Authenticated `/assets/avatar`, `/assets/media`, `/assets/thumbnail`, and `/assets/qr` return binary bytes without base64 encoding. History carries public media checksums for echo correlation; native raw records stay inside this service.
+The typed tRPC API at `/trpc` exposes status, contacts, groups, conversations, resumable history, recent messages, revocations, login and logout, text sends, and multipart image/file uploads. Reads are scoped to the current account, including its retained database shards; databases from a previous account are excluded. Authenticated `/assets/avatar`, `/assets/media`, `/assets/thumbnail`, and `/assets/qr` return binary bytes without base64 encoding. History carries public media checksums for echo correlation; native raw records stay inside this service.
 
 `WECHAT_WEB_UI` defaults to `true`. Set it to `false` to disable the separate web UI/HTTP listener on `18742`; the authenticated API remains available. The standalone launcher loads the repository `.env` if present and accepts exported `WECHAT_API_TOKEN` and `WECHAT_WEB_UI` overrides. It publishes only the web UI port. Use the root [Compose configuration](../../compose.yaml) for a bridge/runtime deployment on a shared network.
 
-The local web UI keeps its existing HTTP API:
+The web UI also exposes a local HTTP API:
+
+Use `rpc.login.mutate({ mode: "qr" })` or `{ mode: "prompt" }` to initiate login, and `rpc.logout.mutate()` to end the current native session. The local UI uses `POST /api/login` with the same login payload and `POST /api/logout` with `{}`. During logout, status is `logging_out`; success means native authentication has ended, rather than merely queuing an action. A failed logout returns an error and refreshes status from the native client. Logout follows the native client's chat-history setting; automatic login is suppressed until an explicit login request. WeChat may require a fresh camera QR scan afterward.
 
 HTTP API: `GET /api/status`, `/api/contacts`, `/api/groups`, `/api/conversations`, `/api/history?chat_id=...&limit=50&cursor=...`, `/api/capabilities`; `GET /api/events` provides Server-Sent Events; `POST /api/send` accepts `{ "chat_id": "...", "kind": "text", "text": "..." }`. Native IDs remain decimal strings. Browser responses exclude native raw rows, key material, and paths. Errors use `{ "error": { "code": "...", "message": "..." } }`.
 

@@ -13,6 +13,8 @@ import {
   type Row,
 } from "./types";
 export const identifier = (s: string) => '"' + s.replaceAll('"', '""') + '"';
+export const databaseAccount = (path: string) =>
+  path.match(/\/xwechat_files\/([^/]+)\/db_storage\//)?.[1]?.replace(/_[0-9a-f]{4}$/, "");
 const literal = (s: string) => "'" + s.replaceAll("'", "''") + "'";
 const num = (v: any) => Number(v) || 0;
 const md5 = (v: string) => createHash("md5").update(v).digest("hex");
@@ -46,7 +48,10 @@ export class Storage {
     this.schema.clear();
   }
   async databases() {
-    const dbs = (await this.native.databases()).filter((d) => d.readable);
+    const account = this.account();
+    const dbs = (await this.native.databases()).filter(
+      (d) => d.readable && account && databaseAccount(d.path) === account,
+    );
     if (!dbs.length) throw new APIError("not_ready", "Account data is still opening");
     return dbs;
   }
@@ -482,9 +487,6 @@ export class Storage {
     }
     if (!paths.size) throw new APIError("not_ready", "Message history is still opening");
     return { sources, paths };
-  }
-  async bridgeChats() {
-    return [...new Set((await this.messageSources()).sources.map((source) => source.chat))];
   }
   async bridgeRecent(chat: string, limit = 50) {
     if (!chat || chat.length > 256 || !Number.isInteger(limit) || limit < 1 || limit > 500)

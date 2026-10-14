@@ -58,6 +58,7 @@ export interface Status {
   state:
     | "starting"
     | "signing_in"
+    | "logging_out"
     | "awaiting_scan"
     | "awaiting_confirmation"
     | "logged_in"

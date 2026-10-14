@@ -27,6 +27,12 @@ async function fixture() {
           logins.push(input);
         },
       },
+      logout: {
+        mutate: async () => {
+          snapshot.status.state = "awaiting_scan";
+          return { success: true as const };
+        },
+      },
     },
     asset: async () => ({ bytes: Buffer.from("QR image") }),
   } as unknown as WeChatBridge["runtime"];
@@ -77,10 +83,10 @@ test("login qr sends one image only in response to that command", async () => {
   expect(f.sends[0][3]).toMatchObject({ msgtype: "m.image" });
 });
 
-test("login prompt requests saved-account approval and never posts a QR", async () => {
+test("login prompt requests phone confirmation and never posts a QR", async () => {
   const f = await fixture();
   await f.bridge["command"](f.event, "login prompt");
-  expect(f.logins).toEqual([{ mode: "saved" }]);
+  expect(f.logins).toEqual([{ mode: "prompt" }]);
   expect(f.uploads).toHaveLength(0);
   expect(f.sends).toHaveLength(1);
   expect(f.sends[0][3]).toMatchObject({ msgtype: "m.notice" });
@@ -99,6 +105,9 @@ test("a login outage sends one logout notice and one recovery notice across poll
   const f = await fixture();
   f.snapshot.status.state = "logged_in";
   await f.bridge["status"]();
+  f.snapshot.status.state = "logging_out";
+  await f.bridge["status"]();
+  expect(f.sends).toHaveLength(0);
   for (const state of ["awaiting_confirmation", "signing_in", "awaiting_scan"]) {
     f.snapshot.status.state = state;
     await f.bridge["status"]();
@@ -120,4 +129,42 @@ test("a login outage sends one logout notice and one recovery notice across poll
   expect(f.sends[1][3]).toMatchObject({ body: expect.stringContaining("WeChat logged in") });
   expect(f.logins).toHaveLength(0);
   expect(f.uploads).toHaveLength(0);
+});
+
+test("logout posts one owner notice after confirmation, and a failed logout posts none", async () => {
+  const f = await fixture();
+  f.snapshot.status.state = "logged_in";
+  await f.bridge["status"]();
+  let complete: () => void = () => {};
+  const confirmed = new Promise<void>((resolve) => {
+    complete = resolve;
+  });
+  f.bridge.runtime.rpc.logout.mutate = async () => {
+    f.snapshot.status.state = "logging_out";
+    await confirmed;
+    f.snapshot.status.state = "awaiting_scan";
+    return { success: true };
+  };
+  const request = f.bridge["command"](f.event, "logout");
+  await f.bridge["status"]();
+  expect(f.sends).toHaveLength(0);
+  complete();
+  await request;
+  await f.bridge["status"]();
+  expect(f.sends).toHaveLength(1);
+  expect(f.sends[0][1]).toBe(f.event.room_id);
+  expect(f.sends[0][3]).toMatchObject({ body: expect.stringContaining("WeChat logged out") });
+
+  f.snapshot.status.state = "logged_in";
+  await f.bridge["status"]();
+  const notices = f.sends.length;
+  f.bridge.runtime.rpc.logout.mutate = async () => {
+    f.snapshot.status.state = "logging_out";
+    await f.bridge["status"]();
+    f.snapshot.status.state = "logged_in";
+    throw Error("WeChat did not confirm logout");
+  };
+  await expect(f.bridge["command"](f.event, "logout")).rejects.toThrow("did not confirm logout");
+  await f.bridge["status"]();
+  expect(f.sends).toHaveLength(notices);
 });

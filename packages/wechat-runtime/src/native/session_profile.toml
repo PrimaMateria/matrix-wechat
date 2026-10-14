@@ -1,0 +1,49 @@
+# Native session ABI for the pinned WeChat Linux client.
+format_version = 1
+elf_sha256 = "2749535f299ba67feb8ef80cab898bb0531fa8f376b16f8a72db706811c84132"
+# Qt dispatch/ownership is verified; API logout from an active session awaits camera QR login.
+
+[controller]
+rva = "0xad41dc8"
+vtable = "0xa6934e0"
+
+[login]
+vtable = "0xa6f0ac8"
+window_vtable = "0xa6f0b50"
+model_offset = 632
+
+[functions.model_constructor]
+rva = "0x487f250"
+validation_bytes = "554157415641554154534881ec280100"
+
+[functions.model_destructor]
+rva = "0x48808e0"
+validation_bytes = "415653504889fb488d05ca01e7054883"
+
+[functions.model_state_changed]
+rva = "0x4882e50"
+validation_bytes = "41574156534881ecc00000004889fb48"
+
+[functions.allocate]
+rva = "0xa674ee0"
+validation_bytes = "534889fb4883ff014883d3004889dfe8"
+
+[functions.free]
+rva = "0x450c140"
+validation_bytes = "e96b921606cccccccccccccccccccccc"
+
+[functions.queue]
+rva = "0xa50af00"
+validation_bytes = "55415741564154534889cb4989d785ff"
+
+[functions.qr_slot]
+rva = "0x4874550"
+validation_bytes = "83ff01741285ff750d4885f674084889"
+
+[functions.prompt_slot]
+rva = "0x4874710"
+validation_bytes = "534881ec3001000083ff01742185ff0f"
+
+[functions.logout]
+rva = "0x45d82a0"
+validation_bytes = "554157415641554154534881ec680100"

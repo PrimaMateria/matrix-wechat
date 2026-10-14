@@ -10,7 +10,7 @@ import {
   unlink,
   writeFile,
 } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { join } from "node:path";
 import {
   BarcodeFormat,
   BinaryBitmap,
@@ -30,9 +30,13 @@ import {
 } from "./attachments";
 import { voiceAudioProcess } from "./audio";
 import { imageType, sharedCardAsset, stickerImage } from "./media";
-import { outboundProfileSchema, storageProfileSchema } from "./native/profiles";
+import {
+  outboundProfileSchema,
+  sessionProfileSchema,
+  storageProfileSchema,
+} from "./native/profiles";
 import { loginRequestSchema, textMessageSchema, validateParams } from "./schemas";
-import { Storage } from "./storage";
+import { databaseAccount, Storage } from "./storage";
 import { APIError, type Database, type Event, type Row, type Status } from "./types";
 
 const outbound = outboundProfileSchema.parse(
@@ -41,6 +45,12 @@ const outbound = outboundProfileSchema.parse(
 const profile = storageProfileSchema.parse(
   Bun.TOML.parse(await Bun.file(new URL("./native/storage_profile.toml", import.meta.url)).text()),
 );
+const sessionProfile = sessionProfileSchema.parse(
+  Bun.TOML.parse(await Bun.file(new URL("./native/session_profile.toml", import.meta.url)).text()),
+);
+for (const metadata of [outbound, sessionProfile])
+  if (metadata.elf_sha256 !== profile.artifact.sha256)
+    throw new APIError("unsupported_build", "Native profiles reference different client builds");
 
 const root = join(import.meta.dir, ".."),
   data = process.env.WECHAT_DATA_DIR || "/home/wechat/.cache/wechatlinux";
@@ -86,6 +96,7 @@ export class Runtime {
   private dirty = true;
   private baseline = false;
   private loginRequested = false;
+  private autoLoginSuppressed = false;
   private lastQR = 0;
   private lastLoginRetry = 0;
   private serial: Promise<any> = Promise.resolve();
@@ -205,11 +216,8 @@ export class Runtime {
       const token = randomUUID();
       const directory = join(data, "uploads"),
         path = join(directory, token + "." + (type === "image/jpeg" ? "jpg" : type!.slice(6)));
-      const database = (await this.store.databases()).find(
-        (db) => db.path.includes("/" + this.account + "_") && db.path.includes("/db_storage/"),
-      );
-      if (!database) throw new APIError("not_ready", "Account media storage is still opening");
-      const accountRoot = resolve(dirname(database.path), "../..");
+      const [database] = await this.store.databases();
+      const accountRoot = database.path.split("/db_storage/")[0];
       const cachedDirectory = join(
         accountRoot,
         "cache",
@@ -257,6 +265,82 @@ export class Runtime {
     if (JSON.stringify(status) === JSON.stringify(this.status)) return;
     this.status = status;
     this.emit({ type: "login.state", data: { status } });
+  }
+  private clearQR() {
+    this.qr = undefined;
+    this.qrAt = 0;
+    this.lastQR = 0;
+  }
+  private clearSession() {
+    this.account = "";
+    this.sendReady = false;
+    this.baseline = false;
+    this.loginRequested = false;
+    this.dirty = true;
+    this.store.invalidate();
+    this.clearQR();
+  }
+  private updateSessionStatus(state: {
+    logged_in: boolean;
+    login?: { active?: boolean; phase?: number; request?: number };
+  }) {
+    if (state.logged_in && this.account) {
+      this.updateStatus({ state: "logged_in", account: { id: this.account } });
+      this.clearQR();
+      return;
+    }
+    if (this.status.state === "logged_in" || this.status.state === "logging_out")
+      this.clearSession();
+    const login = state.login;
+    this.updateStatus({
+      state:
+        state.logged_in || !login?.active || (login.phase === 4 && login.request === 6)
+          ? "signing_in"
+          : [3, 4].includes(login.phase ?? -1)
+            ? "awaiting_confirmation"
+            : "awaiting_scan",
+    });
+  }
+  async login(params: Row) {
+    const { mode } = validateParams(loginRequestSchema, params);
+    return this.operation(async () => {
+      if (this.status.state === "logged_in") return { success: true };
+      if (Date.now() - this.lastLoginRetry < 5000)
+        throw new APIError("not_ready", "Please wait a few seconds before trying again");
+      this.lastLoginRetry = Date.now();
+      const result = await this.native("login", mode);
+      if (!result.queued && result.reason === "qr_required")
+        throw new APIError("not_ready", "WeChat cannot request phone confirmation. Use login qr.");
+      if (!result.queued) throw new APIError("not_ready", "WeChat login is not ready yet");
+      this.autoLoginSuppressed = false;
+      this.loginRequested = true;
+      this.clearQR();
+      return { success: true };
+    });
+  }
+  async logout(): Promise<{ success: true }> {
+    return this.operation(async () => {
+      const previous = this.status;
+      this.autoLoginSuppressed = true;
+      this.clearQR();
+      this.updateStatus({ state: "logging_out" });
+      try {
+        await this.native("logout");
+        const state = await this.native("status");
+        if (state.logged_in) throw new APIError("logout_failed", "WeChat has not logged out");
+        this.updateSessionStatus(state);
+        if (previous.state === "logged_in") this.verified.add("logout");
+        return { success: true };
+      } catch (error) {
+        // Do not turn a failed logout into a fictitious signed-out session.
+        const state = await this.native("status").catch(() => undefined);
+        if (state) this.updateSessionStatus(state);
+        else this.updateStatus({ state: "disconnected" });
+        throw error instanceof APIError && error.code === "native_error"
+          ? new APIError("logout_failed", "WeChat did not confirm logout")
+          : error;
+      }
+    });
   }
   operation<T>(fn: () => Promise<T>): Promise<T> {
     const task = this.serial.then(fn);
@@ -353,6 +437,8 @@ export class Runtime {
       JSON.stringify(profile) +
       ";\nconst OUTBOUND=" +
       JSON.stringify(outbound) +
+      ";\nconst SESSION=" +
+      JSON.stringify(sessionProfile) +
       ";\n" +
       (await readFile(join(root, "dist/native/instrument.js"), "utf8"));
     this.script = await this.session.createScript(source);
@@ -362,20 +448,8 @@ export class Runtime {
       if (message.type === "send") {
         const p = message.payload;
         if (p.type === "ready") initialized = true;
-        else if (p.type === "login_state") {
-          console.log("Native login state:", JSON.stringify(p.state));
-          this.lastQR = 0;
-          this.qr = undefined;
-          this.qrAt = 0;
-          this.updateStatus({
-            state:
-              !p.state.active || (p.state.phase === 4 && p.state.request === 6)
-                ? "signing_in"
-                : [3, 4].includes(p.state.phase)
-                  ? "awaiting_confirmation"
-                  : "awaiting_scan",
-          });
-        } else if (p.type === "change_hint") {
+        else if (p.type === "change_hint") {
+          if (p.kind.startsWith("login_")) this.clearQR();
           if (p.kind === "login_view_open") {
             this.loginRequested = false;
             this.sendReady = false;
@@ -435,21 +509,14 @@ export class Runtime {
             dbs: Database[] = await this.native("databases");
           const accounts = new Set(
             dbs
-              .filter((d) => d.readable)
-              .map((d) =>
-                d.path
-                  .match(/\/xwechat_files\/([^/]+)\/db_storage\//)?.[1]
-                  ?.replace(/_[0-9a-f]{4}$/, ""),
-              )
+              .filter((d) => d.readable && d.active)
+              .map((d) => databaseAccount(d.path))
               .filter(Boolean),
           );
-          this.account = accounts.size === 1 ? [...accounts][0]! : "";
-          if (this.account && !state.login_view_active) {
-            this.updateStatus({
-              state: "logged_in",
-              account: { id: this.account },
-            });
-            this.qr = undefined;
+          if (!state.logged_in || accounts.size > 1) this.account = "";
+          else if (accounts.size === 1) this.account = [...accounts][0]!;
+          this.updateSessionStatus(state);
+          if (this.status.state === "logged_in") {
             if (this.dirty || !this.baseline) {
               this.dirty = false;
               try {
@@ -479,28 +546,18 @@ export class Runtime {
               console.log("Native send callback ABI validated");
             }
           } else {
-            if (this.status.state === "logged_in") {
-              this.loginRequested = false;
-              this.sendReady = false;
-            }
             this.baseline = false;
             if (
+              !state.logged_in &&
               process.env.WECHAT_AUTO_LOGIN === "true" &&
+              !this.autoLoginSuppressed &&
               !this.loginRequested &&
               state.login?.can_resume &&
               (state.login.phase === 5 || (state.login.phase === 4 && state.login.request === 2))
             ) {
-              const result = await this.native("login", "saved");
+              const result = await this.native("login", "prompt");
               this.loginRequested = result.queued === true;
             }
-            this.updateStatus({
-              state:
-                !state.login?.active || (state.login?.phase === 4 && state.login?.request === 6)
-                  ? "signing_in"
-                  : [3, 4].includes(state.login?.phase)
-                    ? "awaiting_confirmation"
-                    : "awaiting_scan",
-            });
             if (state.login?.phase === 0 && Date.now() - this.lastQR > 4000) {
               this.lastQR = Date.now();
               await this.refreshQR();
@@ -530,23 +587,9 @@ export class Runtime {
         event_source: "native_database_write_hooks",
         direct_message_callback: "unverified",
       };
+    if (method === "login") return this.login(params);
+    if (method === "logout") return this.logout();
     return this.operation(async () => {
-      if (method === "login.retry") {
-        if (this.status.state === "logged_in") return { success: true };
-        if (Date.now() - this.lastLoginRetry < 5000)
-          throw new APIError("not_ready", "Please wait a few seconds before trying again");
-        const { mode } = validateParams(loginRequestSchema, params);
-        this.lastLoginRetry = Date.now();
-        const result = await this.native("login", mode);
-        if (!result.queued && result.reason === "qr_required")
-          throw new APIError("not_ready", "No saved account is available. Use login qr.");
-        if (!result.queued) throw new APIError("not_ready", "WeChat login is not ready yet");
-        this.loginRequested = true;
-        this.qr = undefined;
-        this.qrAt = 0;
-        this.lastQR = 0;
-        return { success: true };
-      }
       if (this.status.state !== "logged_in")
         throw new APIError("not_ready", "WeChat is still signing in");
       if (method === "contacts") return this.store.contacts();

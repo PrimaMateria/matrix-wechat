@@ -209,18 +209,23 @@ test("sending accepts only explicit JSON POST and passes real recipient/text", a
   ).toBe(200);
   expect(calls[0]).toEqual({ method: "send", params: p });
 });
-test("login retry requires the same local JSON mutation controls", async () => {
-  const { handler, calls } = setup();
-  const request = (origin: string) =>
-    new Request("http://127.0.0.1/api/login/retry", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Origin: origin },
-      body: JSON.stringify({ mode: "qr" }),
-    });
-  expect((await handler(request("http://attacker.example"))).status).toBe(403);
-  expect(calls).toHaveLength(0);
-  expect((await handler(request("http://127.0.0.1"))).status).toBe(200);
-  expect(calls[0]).toEqual({ method: "login.retry", params: { mode: "qr" } });
+test("login and logout require local JSON mutation controls", async () => {
+  for (const [method, params] of [
+    ["login", { mode: "qr" }],
+    ["logout", {}],
+  ] as const) {
+    const { handler, calls } = setup();
+    const request = (origin: string) =>
+      new Request(`http://127.0.0.1/api/${method}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: origin },
+        body: JSON.stringify(params),
+      });
+    expect((await handler(request("http://attacker.example"))).status).toBe(403);
+    expect(calls).toHaveLength(0);
+    expect((await handler(request("http://127.0.0.1"))).status).toBe(200);
+    expect(calls[0]).toEqual({ method, params });
+  }
 });
 test("SSE uses normalized events and unsubscribes on disconnect", async () => {
   const { handler, subscribers } = setup();

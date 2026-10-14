@@ -22,6 +22,7 @@ export interface Backend {
   recent(chat: string): Promise<Message[]>;
   revocations(): Promise<{ chat: string; id: string }[]>;
   login(input: z.infer<typeof loginRequestSchema>): Promise<unknown>;
+  logout(): Promise<{ success: true }>;
   send(input: z.infer<typeof textMessageSchema>): Promise<unknown>;
   upload(chat: string, file: File, kind: "image" | "file"): Promise<unknown>;
 }
@@ -56,6 +57,7 @@ export const router = t.router({
   recent: t.procedure.input(z.object({ chat })).query(({ ctx, input }) => ctx.recent(input.chat)),
   revocations: t.procedure.query(({ ctx }) => ctx.revocations()),
   login: t.procedure.input(loginRequestSchema).mutation(({ ctx, input }) => ctx.login(input)),
+  logout: t.procedure.mutation(({ ctx }) => ctx.logout()),
   send: t.procedure.input(textMessageSchema).mutation(({ ctx, input }) => ctx.send(input)),
   upload: t.procedure
     .input(

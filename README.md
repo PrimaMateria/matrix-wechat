@@ -38,7 +38,7 @@ Open http://127.0.0.1:18742/ for WeChat login and chat inspection. Compose publi
 
 To enable double puppeting, set `MATRIX_OWNER_AS_TOKEN` in the bridge container only. Use an existing double-puppeting appservice token whose registered user namespace includes `bridge.owner`. The bridge verifies the owner identity, accepts pending invitations to its own rooms, and mirrors new messages sent from your WeChat account as your real Matrix account. Mirrored events carry an echo marker so they are not sent back to WeChat. Voluntary departures and previously imported event authors are preserved. Without this token, the owner accepts invitations manually and WeChat messages use ghost accounts. Keep this credential out of source control and out of the runtime container.
 
-The bridge invites its configured owner to a management room. Login is command based: send `login qr` for one QR image, or `login prompt` to request phone approval for a saved account. A session drop produces one logout notice, followed by one recovery notice when login returns. QR refreshes and intermediate login states stay silent. Outgoing messages queued during an outage receive one waiting notice. Use `status` to check progress. The optional host-side ADB watcher can approve the desktop-login prompt:
+The bridge invites its configured owner to a management room. Login is command based: send `login qr` for one QR image, or `login prompt` to request phone approval for the account remembered by WeChat. The web UI has a Log out button, and the management room accepts `logout`. Logout uses the native Qt session action and returns success only after WeChat confirms that authentication has ended. It follows the client's chat-history setting and disables automatic login until you explicitly request login. The runtime reports `logging_out` while waiting; the bridge sends the owner one notice after completion. A session drop also produces one logout notice, followed by one recovery notice when login returns. QR refreshes and intermediate login states stay silent. Outgoing messages queued during an outage receive one waiting notice. Use `status` to check progress. The optional host-side ADB watcher can approve the desktop-login prompt:
 
 ```sh
 bun packages/wechat-runtime/scripts/adb-login.ts --watch
@@ -65,7 +65,8 @@ Sticker/voice/location sending, native mention construction, native revocation, 
 Only `bridge.owner` can issue commands. Send them in the management room, or prefix them with `!wechat` in a portal:
 
 - `help`, `status`, `capabilities`
-- `login qr`, `login prompt` (`login saved` is an alias; bare `login` requests phone approval)
+- `login qr`, `login prompt` (bare `login` requests phone approval)
+- `logout` (ends the current native session)
 - `list contacts`, `list groups`
 - `start-chat <cached contact or conversation ID>`
 - `sync`
@@ -105,6 +106,6 @@ bun run test:matrix restart outage
 bun run test:matrix permissions encryption
 ```
 
-Without `--build`, existing local images are reused; missing images are built automatically. Each run starts separate runtime, Synapse, and bridge containers, registers a test Matrix owner and appservice, and starts the ADB login watcher. Scan the QR manually if no saved account is available. All outgoing tests target **File Transfer only**. Transfers and red packets are never sent or collected; incoming payment cards are checked in the history case. Images, files, and MP4 tests reuse actual cached account bytes, so those examples must be available in the account.
+Without `--build`, existing local images are reused; missing images are built automatically. Each run starts separate runtime, Synapse, and bridge containers, registers a test Matrix owner and appservice, and starts the ADB login watcher. Scan the QR manually if WeChat cannot request phone confirmation. All outgoing tests target **File Transfer only**. Transfers and red packets are never sent or collected; incoming payment cards are checked in the history case. Images, files, and MP4 tests reuse actual cached account bytes, so those examples must be available in the account.
 
 If running, the standalone `wechatlinux-demo` container is temporarily stopped to prevent concurrent account access, then restored. Override images with `BRIDGE_IMAGE` and `WECHAT_RUNTIME_IMAGE`; override the existing container with `WECHATLINUX_CONTAINER`. Private logs and proof summaries stay under ignored `data/matrix-acceptance/`.

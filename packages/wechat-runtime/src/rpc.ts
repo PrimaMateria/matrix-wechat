@@ -24,7 +24,8 @@ export function createRPCHandler(runtime: Runtime, token: string) {
     history: ({ chat, cursor }) => ready(() => runtime.store.bridgeHistory(chat, cursor)),
     recent: (chat) => ready(() => runtime.store.bridgeRecent(chat, 500)),
     revocations: () => ready(() => runtime.store.bridgeRevocations()),
-    login: (input) => runtime.dispatch("login.retry", input),
+    login: (input) => runtime.login(input),
+    logout: () => runtime.logout(),
     send: (input) => runtime.dispatch("send", input),
     upload: async (chat, file, kind) =>
       kind === "image"
