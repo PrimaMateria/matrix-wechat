@@ -101,7 +101,7 @@ test("login commands do not request another login for an active session", async 
   expect(f.sends[0][3]).toMatchObject({ body: "WeChat is already logged in." });
 });
 
-test("a login outage sends one logout notice and one recovery notice across polls and restarts", async () => {
+test("a login outage sends one connection notice and one recovery notice across polls and restarts", async () => {
   const f = await fixture();
   f.snapshot.status.state = "logged_in";
   await f.bridge["status"]();
@@ -121,14 +121,41 @@ test("a login outage sends one logout notice and one recovery notice across poll
   restarted["management"] = f.event.room_id;
   await restarted["status"]();
   expect(f.sends).toHaveLength(1);
-  expect(f.sends[0][3]).toMatchObject({ body: expect.stringContaining("WeChat logged out") });
+  expect(f.sends[0][3]).toMatchObject({ body: expect.stringContaining("WeChat connection lost") });
   f.snapshot.status.state = "logged_in";
   await restarted["status"]();
   await restarted["status"]();
   expect(f.sends).toHaveLength(2);
-  expect(f.sends[1][3]).toMatchObject({ body: expect.stringContaining("WeChat logged in") });
+  expect(f.sends[1][3]).toMatchObject({
+    body: expect.stringContaining("WeChat connection restored"),
+  });
   expect(f.logins).toHaveLength(0);
   expect(f.uploads).toHaveLength(0);
+});
+
+test("a runtime crash reports connection loss once without claiming logout or initiating login", async () => {
+  const f = await fixture();
+  f.snapshot.status.state = "logged_in";
+  await f.bridge["status"]();
+  const query = f.bridge.runtime.rpc.status.query;
+  f.bridge.runtime.rpc.status.query = async () => {
+    throw Error("Runtime unavailable");
+  };
+  await expect(f.bridge["status"]()).rejects.toThrow("Runtime unavailable");
+  await expect(f.bridge["status"]()).rejects.toThrow("Runtime unavailable");
+  f.bridge.runtime.rpc.status.query = query;
+  for (const state of ["starting", "awaiting_confirmation"]) {
+    f.snapshot.status.state = state;
+    await f.bridge["status"]();
+  }
+  expect(f.sends).toHaveLength(1);
+  const body = (f.sends[0][3] as { body: string }).body;
+  expect(body).toContain("connection lost");
+  expect(body).not.toContain("logged out");
+  expect(f.logins).toHaveLength(0);
+  f.snapshot.status.state = "logged_in";
+  await f.bridge["status"]();
+  expect(f.sends).toHaveLength(2);
 });
 
 test("logout posts one owner notice after confirmation, and a failed logout posts none", async () => {

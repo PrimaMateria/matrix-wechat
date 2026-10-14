@@ -123,14 +123,14 @@ export class WeChatBridge {
     if (!encrypted) this.usableRooms.add(room);
     return !encrypted;
   }
-  private async status() {
+  private async status(logoutConfirmed = false) {
     let snapshot;
+    let failure: unknown;
     try {
       snapshot = await this.runtime.rpc.status.query();
     } catch (error) {
-      this.connection = { state: "disconnected" };
-      await this.portalPermissions();
-      throw error;
+      failure = error;
+      snapshot = { status: { state: "disconnected" as const } };
     }
     const previous = this.account;
     this.connection = snapshot.status;
@@ -154,7 +154,7 @@ export class WeChatBridge {
       const generation = Number(this.store.meta("connection_generation") || "0") + 1;
       await this.notice(
         this.management,
-        "WeChat logged out. Live sync and sends are paused; unsent messages remain queued. Send login prompt to request phone confirmation, or login qr for a new QR code.",
+        `${logoutConfirmed ? "WeChat logged out." : "WeChat connection lost. The desktop client may have stopped or restarted."} Live sync and sends are paused; unsent messages remain queued. Check status after the runtime recovers. If login is needed, send login prompt to request phone confirmation, or login qr for a new QR code.`,
         `logout:${generation}`,
       );
       this.store.setMeta("connection_generation", String(generation));
@@ -163,12 +163,13 @@ export class WeChatBridge {
     } else if (state === "logged_in" && this.store.meta("login_required")) {
       await this.notice(
         this.management,
-        "WeChat logged in. Live sync and queued sends are resuming.",
+        "WeChat connection restored. Live sync and queued sends are resuming.",
         `login-restored:${this.store.meta("connection_generation")}`,
       );
       this.store.setMeta("login_required", "");
     }
     this.store.setMeta("connection_state", state);
+    if (failure) throw failure;
     return logoutNotice;
   }
   private portalWritable(portal: Portal) {
@@ -637,7 +638,7 @@ export class WeChatBridge {
       }
     } else if (command === "logout") {
       await this.runtime.rpc.logout.mutate();
-      if (await this.status()) return;
+      if (await this.status(true)) return;
       response = "WeChat is logged out. Use login qr or login prompt to sign in again.";
     } else if (command === "list" && args[0] === "contacts")
       response =
