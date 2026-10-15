@@ -53,6 +53,28 @@ return_type = "void"
 arguments = ["pointer (dummy object; not dereferenced by inspected wrappers)", "pointer (24-byte libc++ std::string UTF-8 JSON arguments)", "pointer (24-byte libc++ std::string context/request identity)", "pointer (8-byte owner slot holding callback object)"]
 ownership = "Callback owner slot is consumed; callback object and NativeCallbacks must remain alive until invocation/destruction. Input strings must remain valid through initial call; native worker copies captured context and arguments. Thread requirements unverified."
 
+# Homebrew Ghidra 12.1.4 and ELF disassembly, pinned SHA above. Validate all
+# register/stack assumptions before installing either instruction-only probe.
+[uploads.file_context]
+rva = "0x82e8c10"
+validation_bytes = "554157415641554154534881ec280500004d89c74889cd4889d34989f44989fd49beaaaaaaaaaaaaaaaa4c8937"
+
+[uploads.file_path_call]
+rva = "0x82e8cb1"
+validation_bytes = "488dbc24b00100004c8d4424204c8d8c24a0020000be0100000031d231c9e84ce40dff"
+
+[uploads.file_path_ready]
+rva = "0x82e8cd4"
+validation_bytes = "f68424a002000001740d488bbc24b0020000"
+
+[uploads.image_entry]
+rva = "0x82e7ee0"
+validation_bytes = "554157415641554154534881ec780400004989cf4989d64889fb49bdaaaaaaaa"
+
+[uploads.assign_string]
+rva = "0x450fdb0"
+validation_bytes = "4839f7741b0fb60ef607017517f6c101752f488b4610488947100f10060f1107"
+
 [callback_layout]
 size_at_least = 32
 constructor_abi = "void(pointer object,pointer invoke,pointer destroy)"

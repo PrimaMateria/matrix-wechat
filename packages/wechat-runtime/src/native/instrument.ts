@@ -1,4 +1,5 @@
 import { createSession } from "./session";
+import { createUploadHooks } from "./uploads";
 
 /* Injected into the exact pinned WeChat image. Keys remain in target memory. */
 
@@ -30,11 +31,6 @@ type PrepareInvocation = InvocationContext & {
 };
 type StepInvocation = InvocationContext & { statement?: PreparedStatement };
 type CloseInvocation = InvocationContext & { dbId?: string; connection?: DatabaseConnection };
-type FileInvocation = InvocationContext & {
-  thread?: number;
-  source?: StdString;
-};
-type FilePathInvocation = InvocationContext & { output?: NativePointer; source?: StdString };
 interface StdString {
   object: NativePointer;
   bytes: NativePointer;
@@ -555,7 +551,6 @@ function readStdString(p: NativePointer): string {
   if (n > 2097152) throw Error("Native result exceeds limit");
   return (long ? p.add(16).readPointer() : p.add(1)).readUtf8String(n) || "";
 }
-const imageSources = new Map<string, StdString>();
 let traceSends = false;
 const sendTraces: SendTrace[] = [];
 for (const [address, argument] of [
@@ -594,39 +589,8 @@ for (const [address, argument] of [
       }
     },
   });
-const fileSources = new Map<string, StdString>();
-const fileThreads = new Map<number, StdString>();
 const assignString = new NativeFunction(base.add(0x450fdb0), "pointer", ["pointer", "pointer"]);
-// Only substitute paths for an API-owned file operation on its native worker thread.
-Interceptor.attach(base.add(0x82e8c10), {
-  onEnter(this: FileInvocation, args) {
-    this.thread = Process.getCurrentThreadId();
-    this.source = fileSources.get(readStdString(args[3]));
-    if (this.source) fileThreads.set(this.thread, this.source);
-  },
-  onLeave(this: FileInvocation) {
-    if (this.source && this.thread !== undefined) fileThreads.delete(this.thread);
-  },
-});
-Interceptor.attach(base.add(0x73c7120), {
-  onEnter(this: FilePathInvocation, args) {
-    this.source = this.returnAddress.equals(base.add(0x82e8cd4))
-      ? fileThreads.get(Process.getCurrentThreadId())
-      : undefined;
-    this.output = args[0];
-  },
-  onLeave(this: FilePathInvocation) {
-    if (this.source && this.output) assignString(this.output, this.source.object);
-  },
-});
-// The JSON route accepts an HTTP prefix, but its core sender requires a local filename.
-// Substitute only our retained, API-owned source on the native worker thread.
-Interceptor.attach(base.add(0x82e7ee0), {
-  onEnter(args) {
-    const source = imageSources.get(readStdString(args[3]));
-    if (source) args[3] = source.object;
-  },
-});
+const uploads = createUploadHooks(base, OUTBOUND, readStdString, stdString);
 function exactJSON(s: string): NativeSendResult {
   return JSON.parse(
     s.replace(/("(?:message_id|server_id|create_time)"\s*:\s*)(-?\d+)/g, '$1"$2"'),
@@ -936,12 +900,12 @@ rpc.exports = {
             c as "&" | "<" | ">" | '"' | "'"
           ],
       );
-    fileSources.set(marker, stdString(path));
+    uploads.register("file", marker, path);
     const xml = `<msg><appmsg><title>${escape(name)}</title><type>6</type><appattach><cdnattachurl>${marker}</cdnattachurl><aeskey>${"0".repeat(32)}</aeskey></appattach></appmsg></msg>`;
     return outboundCall(
       JSON.stringify({ chat_id: chat, message_type: 49, content_xml: xml }),
       true,
-    ).finally(() => fileSources.delete(marker));
+    );
   },
   sendimage(chat: unknown, path: unknown) {
     if (
@@ -952,11 +916,11 @@ rpc.exports = {
     )
       throw Error("Invalid image upload");
     const marker = "http://127.0.0.1:18742/native-upload/" + path.split("/").pop();
-    imageSources.set(marker, stdString(path));
+    uploads.register("image", marker, path);
     return outboundCall(
       JSON.stringify({ chat_id: chat, message_type: 3, content_xml: marker }),
       true,
-    ).finally(() => imageSources.delete(marker));
+    );
   },
   sendprobe() {
     return outboundCall("{}");

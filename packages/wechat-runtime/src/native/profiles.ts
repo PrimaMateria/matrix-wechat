@@ -27,6 +27,13 @@ export const outboundProfileSchema = z
     format_version: z.literal(1),
     elf_sha256: hash,
     functions: z.record(z.string(), nativeFunction),
+    uploads: z.object({
+      file_context: nativeFunction,
+      file_path_call: nativeFunction,
+      file_path_ready: nativeFunction,
+      image_entry: nativeFunction,
+      assign_string: nativeFunction,
+    }),
   })
   .passthrough();
 
