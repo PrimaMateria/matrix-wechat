@@ -208,7 +208,20 @@ export function incoming(
     };
   return { type, content };
 }
-export function outgoing(content: Record<string, any>) {
+export function outgoing(content: Record<string, any>, eventType = "m.room.message") {
+  if (eventType === "m.reaction") {
+    const relation = content["m.relates_to"];
+    if (
+      relation?.rel_type !== "m.annotation" ||
+      typeof relation.event_id !== "string" ||
+      !relation.event_id ||
+      typeof relation.key !== "string" ||
+      !relation.key.trim() ||
+      Buffer.byteLength(relation.key) > 65536
+    )
+      throw new Error("A reaction requires a target message and a nonempty reaction key");
+    return { kind: "text" as const, text: relation.key, reply: relation.event_id };
+  }
   if (content.file) unsupported("Encrypted attachments");
   if (content["m.relates_to"]?.rel_type === "m.replace") unsupported("Message editing");
   if (typeof content.body !== "string") throw new Error("Message body is required");

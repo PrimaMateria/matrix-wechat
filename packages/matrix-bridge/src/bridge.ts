@@ -705,7 +705,8 @@ export class WeChatBridge {
     const portal = this.store.portalForRoom(event.room_id);
     if (!portal) throw new Error("This room is not connected to the current WeChat account");
     if (event.type === "m.room.encrypted") unsupported("Encrypted messages");
-    if (event.type !== "m.room.message") unsupported(`Sending ${event.type}`);
+    if (!["m.room.message", "m.reaction"].includes(event.type))
+      unsupported(`Sending ${event.type}`);
     if (this.connection.state !== "logged_in")
       throw new APIError("not_ready", "WeChat is disconnected; send is waiting for login");
     if (portal.account !== this.account)
@@ -722,7 +723,7 @@ export class WeChatBridge {
         )
     )
       return "wait";
-    const message = outgoing(event.content);
+    const message = outgoing(event.content, event.type);
     let bytes: Buffer | undefined;
     let name = "",
       reply: string | undefined;

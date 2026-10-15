@@ -25,7 +25,14 @@ export function unsupported(operation: string): never {
   throw new APIError("unsupported", `${operation} is not supported by the current WeChat runtime`);
 }
 export const capabilities = {
-  sending: ["text", "text reply", "JPEG/PNG/GIF image", "file", "MP4 via file upload"],
+  sending: [
+    "text",
+    "text reply",
+    "Matrix reactions as emoji replies",
+    "JPEG/PNG/GIF image",
+    "file",
+    "MP4 via file upload",
+  ],
   receiving: [
     "text",
     "reply",

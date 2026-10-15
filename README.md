@@ -60,6 +60,8 @@ Missing cached media produces a readable placeholder and is retried. Explicit re
 
 Outgoing support covers text, text replies, JPEG/PNG/GIF images, files, and MP4 through the existing file-upload route. Native acknowledgement is not delivery confirmation: the bridge waits for a matching source record with a server ID and suppresses its echo. Ambiguous or interrupted sends are reported as uncertain and are never automatically resubmitted, including when an API connection fails during a send.
 
+Matrix emoji reactions are sent as quoted text replies containing the reaction emoji. The reacted-to message must have a confirmed WeChat message ID in that conversation.
+
 Sticker/voice/location sending, native mention construction, native revocation, group/profile mutations, presence, encrypted Matrix rooms, and uncached-media download initiation are unsupported. Unplayable Channels video remains a cover card. Leaving a Matrix room does not leave its WeChat group. No additional native capabilities are implemented here.
 
 ## Commands
