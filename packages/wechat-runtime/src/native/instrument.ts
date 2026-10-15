@@ -934,6 +934,7 @@ rpc.exports = {
     );
   },
   login: session.login,
+  loginqr: session.qr,
   logout: session.logout,
   status() {
     return {

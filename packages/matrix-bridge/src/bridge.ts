@@ -662,6 +662,13 @@ export class WeChatBridge {
     } else response = "Unknown command. Send help for available commands.";
     await this.notice(event.room_id, response, `command:${event.event_id}`);
   }
+  private commandText(event: MatrixEvent): string | undefined {
+    if (event.type !== "m.room.message" || typeof event.content.body !== "string") return;
+    const body = event.content.body,
+      prefix = `${this.config.bridge.command_prefix} `;
+    if (body.startsWith(prefix)) return body.slice(prefix.length);
+    if (event.room_id === this.management) return body;
+  }
   private async sendJob(job: Inbox, event: MatrixEvent) {
     if (event.type === "m.room.encryption" && event.state_key === "") {
       await this.notice(
@@ -690,20 +697,10 @@ export class WeChatBridge {
     }
     if (!(await this.usable(event.room_id)))
       throw new Error("Encrypted Matrix rooms are unsupported");
-    if (event.type === "m.room.message" && typeof event.content.body === "string") {
-      const body = event.content.body;
-      if (
-        body.startsWith(`${this.config.bridge.command_prefix} `) ||
-        event.room_id === this.management
-      ) {
-        await this.command(
-          event,
-          body.startsWith(`${this.config.bridge.command_prefix} `)
-            ? body.slice(this.config.bridge.command_prefix.length + 1)
-            : body,
-        );
-        return "done";
-      }
+    const command = this.commandText(event);
+    if (command !== undefined) {
+      await this.command(event, command);
+      return "done";
     }
     const portal = this.store.portalForRoom(event.room_id);
     if (!portal) throw new Error("This room is not connected to the current WeChat account");
@@ -800,14 +797,18 @@ export class WeChatBridge {
     return "submitted";
   }
   private async jobs() {
-    for (const job of this.store.queued()) {
+    for (const job of this.store.queued(this.management, `${this.config.bridge.command_prefix} `)) {
       const event: MatrixEvent = JSON.parse(job.payload);
       try {
         const state = await this.sendJob(job, event);
         if (state !== "wait") this.store.run("UPDATE inbox SET state=? WHERE id=?", state, job.id);
       } catch (error) {
         const current = this.store.get<Inbox>("SELECT * FROM inbox WHERE id=?", job.id)!;
-        if (errorCode(error) === "not_ready" && current.state === "queued") {
+        if (
+          errorCode(error) === "not_ready" &&
+          current.state === "queued" &&
+          this.commandText(event) === undefined
+        ) {
           if (!current.notice) {
             await this.notice(
               event.room_id,

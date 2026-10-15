@@ -168,8 +168,17 @@ export class Store {
       JSON.stringify(event),
     );
   }
-  queued() {
-    return this.all<Inbox>("SELECT * FROM inbox WHERE state='queued' ORDER BY rowid LIMIT 100");
+  queued(management = "", prefix = "") {
+    return this.all<Inbox>(
+      `SELECT * FROM inbox WHERE state='queued'
+       ORDER BY CASE WHEN json_extract(payload,'$.type')='m.room.message' AND
+         (json_extract(payload,'$.room_id')=? OR
+          (?<>'' AND instr(json_extract(payload,'$.content.body'),?)=1))
+         THEN 0 ELSE 1 END, rowid LIMIT 100`,
+      management,
+      prefix,
+      prefix,
+    );
   }
   pending(account: string, chat?: string) {
     return this.all<Inbox>(

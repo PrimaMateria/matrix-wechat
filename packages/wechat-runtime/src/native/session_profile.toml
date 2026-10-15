@@ -11,6 +11,8 @@ vtable = "0xa6934e0"
 vtable = "0xa6f0ac8"
 window_vtable = "0xa6f0b50"
 model_offset = 632
+# Current QR payload copied by 0x488e8f0, verified with Homebrew Ghidra 12.1.4.
+qr_data_offset = 576
 
 [functions.model_constructor]
 rva = "0x487f250"
@@ -39,6 +41,10 @@ validation_bytes = "55415741564154534889cb4989d785ff"
 [functions.qr_slot]
 rva = "0x4874550"
 validation_bytes = "83ff01741285ff750d4885f674084889"
+
+[functions.qr_received]
+rva = "0x488e8f0"
+validation_bytes = "488d742410488dbb40020000e8af14c8ffc7434400000000c7434c00000000"
 
 [functions.prompt_slot]
 rva = "0x4874710"

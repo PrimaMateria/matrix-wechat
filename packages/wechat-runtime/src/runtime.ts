@@ -11,16 +11,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { join } from "node:path";
-import {
-  BarcodeFormat,
-  BinaryBitmap,
-  DecodeHintType,
-  HybridBinarizer,
-  MultiFormatReader,
-  RGBLuminanceSource,
-} from "@zxing/library";
 import type * as frida from "frida";
-import { PNG } from "pngjs";
 import {
   attachmentChecksum,
   receivedFile,
@@ -29,6 +20,7 @@ import {
   receivedVideo,
 } from "./attachments";
 import { voiceAudioProcess } from "./audio";
+import { loginQRImage } from "./login-qr";
 import { imageType, sharedCardAsset, stickerImage } from "./media";
 import {
   outboundProfileSchema,
@@ -98,7 +90,7 @@ export class Runtime {
   private loginRequested = false;
   private autoLoginSuppressed = false;
   private lastQR = 0;
-  private lastLoginRetry = 0;
+  private lastLoginRetry = new Map<"prompt" | "qr", number>();
   private serial: Promise<any> = Promise.resolve();
   private subscribers = new Set<(e: Event) => void>();
   private sendReady = false;
@@ -342,13 +334,20 @@ export class Runtime {
     const { mode } = validateParams(loginRequestSchema, params);
     return this.operation(async () => {
       if (this.status.state === "logged_in") return { success: true };
-      if (Date.now() - this.lastLoginRetry < 5000)
+      if (
+        mode === "qr" &&
+        this.status.state === "awaiting_scan" &&
+        this.qr &&
+        Date.now() - this.qrAt <= 8000
+      )
+        return { success: true };
+      if (Date.now() - (this.lastLoginRetry.get(mode) || 0) < 5000)
         throw new APIError("not_ready", "Please wait a few seconds before trying again");
-      this.lastLoginRetry = Date.now();
       const result = await this.native("login", mode);
       if (!result.queued && result.reason === "qr_required")
         throw new APIError("not_ready", "WeChat cannot request phone confirmation. Use login qr.");
       if (!result.queued) throw new APIError("not_ready", "WeChat login is not ready yet");
+      this.lastLoginRetry.set(mode, Date.now());
       this.autoLoginSuppressed = false;
       this.loginRequested = true;
       this.clearQR();
@@ -516,31 +515,10 @@ export class Runtime {
     void this.monitor();
   }
   private async refreshQR() {
-    const scan = await this.native("scanqr"),
-      matches = new Map<string, Buffer>();
-    for (const candidate of scan.candidates) {
-      try {
-        const bytes = Buffer.from(candidate.bytes),
-          png = PNG.sync.read(bytes);
-        const gray = new Uint8ClampedArray(png.width * png.height);
-        for (let i = 0; i < gray.length; i++)
-          gray[i] = (png.data[i * 4] + 2 * png.data[i * 4 + 1] + png.data[i * 4 + 2]) / 4;
-        const source = new RGBLuminanceSource(gray, png.width, png.height);
-        const hints = new Map();
-        hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.QR_CODE]);
-        const decoder = new MultiFormatReader();
-        decoder.setHints(hints);
-        const text = decoder.decode(new BinaryBitmap(new HybridBinarizer(source))).getText();
-        if (
-          ["weixin.qq.com", "login.weixin.qq.com", "login.wechat.com"].includes(
-            new URL(text).hostname,
-          )
-        )
-          matches.set(text, bytes);
-      } catch {}
-    }
-    if (matches.size !== 1) return false;
-    this.qr = [...matches.values()][0];
+    const payload = await this.native("loginqr"),
+      image = loginQRImage(Buffer.from(payload.bytes));
+    if (!image) return false;
+    this.qr = image;
     this.qrAt = Date.now();
     await privateWrite(join(data, "login-qr.png"), this.qr);
     this.verified.add("login.qr");

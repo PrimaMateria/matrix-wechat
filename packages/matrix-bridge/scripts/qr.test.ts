@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { APIError } from "wechat-rpc";
 import { WeChatBridge } from "../src/bridge";
 import { loadConfig } from "../src/config";
 import type { Matrix } from "../src/matrix";
@@ -99,6 +100,88 @@ test("login commands do not request another login for an active session", async 
   expect(f.logins).toHaveLength(0);
   expect(f.uploads).toHaveLength(0);
   expect(f.sends[0][3]).toMatchObject({ body: "WeChat is already logged in." });
+});
+
+test("failed login commands finish with their real error and never retry as outgoing messages", async () => {
+  const f = await fixture();
+  f.bridge.runtime.rpc.login.mutate = async (input) => {
+    f.logins.push(input);
+    throw new APIError("not_ready", "WeChat cannot request phone confirmation. Use login qr.");
+  };
+  f.bridge.store.accept({ ...f.event, content: { msgtype: "m.text", body: "login" } });
+  await f.bridge["jobs"]();
+  await f.bridge["jobs"]();
+  expect(f.logins).toEqual([{ mode: "prompt" }]);
+  expect(
+    f.bridge.store.get<{ state: string }>("SELECT state FROM inbox WHERE id=?", f.event.event_id),
+  ).toEqual({ state: "failed" });
+  expect(f.sends).toHaveLength(1);
+  expect(f.sends[0][3]).toMatchObject({
+    body: "Unable to bridge: WeChat cannot request phone confirmation. Use login qr.",
+  });
+});
+
+test("login commands bypass a full disconnected message backlog", async () => {
+  const f = await fixture();
+  const portalRoom = "!portal:example.com";
+  f.bridge.store.run(
+    "INSERT INTO portals(account,chat,room) VALUES(?,?,?)",
+    "self",
+    "friend",
+    portalRoom,
+  );
+  for (let i = 0; i < 120; i++)
+    f.bridge.store.accept({
+      ...f.event,
+      event_id: `$backlog-${i}`,
+      room_id: portalRoom,
+      content: { msgtype: "m.text", body: `pending message ${i}` },
+    });
+  f.bridge.store.accept({ ...f.event, content: { msgtype: "m.text", body: "login qr" } });
+  await f.bridge["jobs"]();
+  expect(f.logins).toEqual([{ mode: "qr" }]);
+  expect(f.uploads).toHaveLength(1);
+  expect(
+    f.bridge.store.get<{ state: string }>("SELECT state FROM inbox WHERE id=?", f.event.event_id),
+  ).toEqual({ state: "done" });
+  expect(
+    f.bridge.store.get<{ total: number }>(
+      "SELECT count(*) AS total FROM inbox WHERE state='queued'",
+    ),
+  ).toEqual({ total: 120 });
+});
+
+test("prefixed commands in portals also bypass the backlog and fail once", async () => {
+  const f = await fixture();
+  const portalRoom = "!portal:example.com";
+  f.bridge.store.run(
+    "INSERT INTO portals(account,chat,room) VALUES(?,?,?)",
+    "self",
+    "friend",
+    portalRoom,
+  );
+  for (let i = 0; i < 110; i++)
+    f.bridge.store.accept({
+      ...f.event,
+      event_id: `$backlog-${i}`,
+      room_id: portalRoom,
+      content: { msgtype: "m.text", body: "pending" },
+    });
+  f.bridge.runtime.rpc.login.mutate = async (input) => {
+    f.logins.push(input);
+    throw new APIError("not_ready", "Choose QR login");
+  };
+  f.bridge.store.accept({
+    ...f.event,
+    room_id: portalRoom,
+    content: { msgtype: "m.text", body: `${f.bridge.config.bridge.command_prefix} login` },
+  });
+  await f.bridge["jobs"]();
+  await f.bridge["jobs"]();
+  expect(f.logins).toEqual([{ mode: "prompt" }]);
+  expect(
+    f.bridge.store.get<{ state: string }>("SELECT state FROM inbox WHERE id=?", f.event.event_id),
+  ).toEqual({ state: "failed" });
 });
 
 test("a login outage sends one connection notice and one recovery notice across polls and restarts", async () => {

@@ -42,6 +42,18 @@ export function createSession(onChange: (kind: string) => void) {
       can_resume: model.add(0x338).readU8() !== 0,
     };
   }
+  function qr() {
+    if (loggedIn() || loginState().phase !== 0) return { bytes: [] };
+    const current = model,
+      field = current.add(SESSION.login.qr_data_offset),
+      long = (field.readU8() & 1) !== 0,
+      length = long ? field.add(8).readU64().toNumber() : field.readU8() >>> 1;
+    if (!length || length > 256000) return { bytes: [] };
+    const data = long ? field.add(16).readPointer() : field.add(1),
+      bytes = data.readByteArray(length);
+    if (!bytes || !current.equals(model) || loginState().phase !== 0) return { bytes: [] };
+    return { bytes: Array.from(new Uint8Array(bytes)) };
+  }
   function slot(context: NativePointer, callback: NativePointer) {
     const object = allocate(24);
     object.writeU32(1);
@@ -164,6 +176,7 @@ export function createSession(onChange: (kind: string) => void) {
   return {
     login,
     logout,
+    qr,
     status: () => ({
       logged_in: loggedIn(),
       login: loginState(),

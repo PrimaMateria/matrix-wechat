@@ -41,7 +41,12 @@ export const sessionProfileSchema = z.object({
   format_version: z.literal(1),
   elf_sha256: hash,
   controller: z.object({ rva: address, vtable: address }),
-  login: z.object({ vtable: address, window_vtable: address, model_offset: z.int().positive() }),
+  login: z.object({
+    vtable: address,
+    window_vtable: address,
+    model_offset: z.int().positive(),
+    qr_data_offset: z.literal(576),
+  }),
   functions: z.object({
     model_constructor: nativeFunction,
     model_destructor: nativeFunction,
@@ -50,6 +55,7 @@ export const sessionProfileSchema = z.object({
     free: nativeFunction,
     queue: nativeFunction,
     qr_slot: nativeFunction,
+    qr_received: nativeFunction,
     prompt_slot: nativeFunction,
     logout: nativeFunction,
   }),
