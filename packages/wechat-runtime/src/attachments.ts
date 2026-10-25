@@ -99,27 +99,38 @@ export async function receivedImage(message: Message, home = "/home/wechat") {
     const uin = file.match(/^key_(\d+)_.*\.statistic$/)?.[1];
     if (uin && md5(uin).slice(0, 4) === suffix) keys.add(uin);
   }
-  for (const month of months(message))
-    for (const ending of ["_h.dat", ".dat"]) {
-      let encoded: Buffer;
-      try {
-        encoded = await cachedBytes(
-          join(account, "msg/attach", md5(message.chat_id), month, "Img", cacheID + ending),
-          account,
-        );
-      } catch (error: any) {
-        if (error.code === "ENOENT") continue;
-        throw error;
-      }
-      for (const uin of keys) {
+  const stem = cacheID;
+  // `verify` is false for the thumbnail, whose MD5 cannot match the original's.
+  const attempt = async (endings: string[], verify: boolean) => {
+    for (const month of months(message))
+      for (const ending of endings) {
+        let encoded: Buffer;
         try {
-          const key = Buffer.from(md5(uin + message.account_id).slice(0, 16));
-          const bytes = decodeImageV2(encoded, key, Number(uin) & 255),
-            type = imageType(bytes);
-          if (type && md5(bytes) === expected.toLowerCase()) return { bytes, type };
-        } catch {}
+          encoded = await cachedBytes(
+            join(account, "msg/attach", md5(message.chat_id), month, "Img", stem + ending),
+            account,
+          );
+        } catch (error: any) {
+          if (error.code === "ENOENT") continue;
+          throw error;
+        }
+        for (const uin of keys) {
+          try {
+            const key = Buffer.from(md5(uin + message.account_id).slice(0, 16));
+            const bytes = decodeImageV2(encoded, key, Number(uin) & 255),
+              type = imageType(bytes);
+            if (type && (!verify || md5(bytes) === expected.toLowerCase())) return { bytes, type };
+          } catch {}
+        }
       }
-    }
+    return undefined;
+  };
+  // Originals first. WeChat only writes those once a human opens the image, so
+  // fall back to the thumbnail it always caches rather than showing nothing.
+  const original = await attempt(["_h.dat", ".dat"], true);
+  if (original) return original;
+  const preview = await attempt(["_t.dat"], false);
+  if (preview) return preview;
   throw new APIError(
     "media_unavailable",
     "Original image is not downloaded or could not be verified",
