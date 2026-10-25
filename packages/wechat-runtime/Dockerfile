@@ -28,7 +28,7 @@ RUN bun run lint && bun run check && bun run test && bun run build
 FROM docker.io/oven/bun:1.3.14 AS runtime
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates squashfs-tools xvfb xauth x11vnc fonts-noto-cjk fontconfig x11-utils x11-xserver-utils \
+    ca-certificates squashfs-tools xvfb xauth x11vnc xdotool fonts-noto-cjk fontconfig x11-utils x11-xserver-utils \
     libasound2 libatomic1 libdbus-1-3 libdrm2 libegl1 libexpat1 libfontconfig1 libfreetype6 libgbm1 libgl1 libglib2.0-0 \
     libgssapi-krb5-2 libgtk-3-0 libnotify4 libnss3 libnspr4 libpulse0 libsecret-1-0 libsqlite3-0 libstdc++6 \
     libqt5dbus5 libqt5gui5 libqt5svg5 libqt5widgets5 libx11-6 libx11-xcb1 libxcb1 libxcb-cursor0 libxcb-icccm4 \
@@ -44,6 +44,7 @@ RUN usermod --home /home/wechat --move-home bun \
 COPY --from=build /opt/matrix-wechat /opt/matrix-wechat
 # Verify the prepared client through the application without starting WeChat.
 RUN bun -e 'import {Runtime} from "./src/runtime.ts";console.log(await new Runtime().executable())'
+COPY --chmod=0755 packages/wechat-runtime/scripts/walk-images.sh /usr/local/bin/walk-images
 ENV HOME=/home/wechat XDG_RUNTIME_DIR=/tmp/runtime-wechat
 USER bun
 EXPOSE 18742 18743 5900
