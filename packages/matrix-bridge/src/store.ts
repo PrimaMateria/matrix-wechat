@@ -23,6 +23,8 @@ export interface Mapping {
   fingerprint: string;
   payload: string;
   media_retry: number;
+  media_attempts: number;
+  media_next_attempt: number;
   redacted: number;
 }
 export interface MatrixEvent {
@@ -53,7 +55,7 @@ export class Store {
     const version = this.db
       .query<{ user_version: number }, []>("PRAGMA user_version")
       .get()!.user_version;
-    if (version > 1) {
+    if (version > 2) {
       this.db.close();
       throw new Error("Bridge database schema is newer than this executable");
     }
@@ -61,14 +63,29 @@ export class Store {
       CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS portals(account TEXT NOT NULL,chat TEXT NOT NULL,room TEXT NOT NULL UNIQUE,cursor TEXT,imported INTEGER NOT NULL DEFAULT 0,metadata TEXT NOT NULL DEFAULT '',PRIMARY KEY(account,chat));
       CREATE TABLE IF NOT EXISTS ghosts(account TEXT NOT NULL,id TEXT NOT NULL,mxid TEXT NOT NULL UNIQUE,profile TEXT NOT NULL DEFAULT '',PRIMARY KEY(account,id));
-      CREATE TABLE IF NOT EXISTS messages(account TEXT NOT NULL,chat TEXT NOT NULL,id TEXT NOT NULL,local TEXT,event TEXT NOT NULL,sender TEXT NOT NULL,fingerprint TEXT NOT NULL,payload TEXT NOT NULL,media_retry INTEGER NOT NULL DEFAULT 0,redacted INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(account,chat,id));
+      CREATE TABLE IF NOT EXISTS messages(account TEXT NOT NULL,chat TEXT NOT NULL,id TEXT NOT NULL,local TEXT,event TEXT NOT NULL,sender TEXT NOT NULL,fingerprint TEXT NOT NULL,payload TEXT NOT NULL,media_retry INTEGER NOT NULL DEFAULT 0,media_attempts INTEGER NOT NULL DEFAULT 0,media_next_attempt INTEGER NOT NULL DEFAULT 0,redacted INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(account,chat,id));
       CREATE INDEX IF NOT EXISTS messages_local ON messages(account,chat,local);
       CREATE INDEX IF NOT EXISTS messages_event ON messages(event);
       CREATE TABLE IF NOT EXISTS inbox(id TEXT PRIMARY KEY,payload TEXT NOT NULL,state TEXT NOT NULL DEFAULT 'queued',account TEXT NOT NULL DEFAULT '',chat TEXT NOT NULL DEFAULT '',fingerprint TEXT NOT NULL DEFAULT '',baseline TEXT NOT NULL DEFAULT '[]',started INTEGER NOT NULL DEFAULT 0,notice INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS incoming(key TEXT PRIMARY KEY,account TEXT NOT NULL,chat TEXT NOT NULL,payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS revocations(account TEXT NOT NULL,chat TEXT NOT NULL,id TEXT NOT NULL,PRIMARY KEY(account,chat,id));
       CREATE TABLE IF NOT EXISTS uploads(key TEXT PRIMARY KEY,mxc TEXT NOT NULL);
-      PRAGMA user_version=1;
+    `);
+    if (version < 2) {
+      const columns = this.db
+        .query<{ name: string }, []>("PRAGMA table_info(messages)")
+        .all()
+        .map((column) => column.name);
+      if (!columns.includes("media_attempts"))
+        this.db.run("ALTER TABLE messages ADD COLUMN media_attempts INTEGER NOT NULL DEFAULT 0");
+      if (!columns.includes("media_next_attempt"))
+        this.db.run(
+          "ALTER TABLE messages ADD COLUMN media_next_attempt INTEGER NOT NULL DEFAULT 0",
+        );
+    }
+    this.db.exec(`CREATE INDEX IF NOT EXISTS messages_media_retry
+        ON messages(account,media_retry,media_next_attempt);
+      PRAGMA user_version=2;
     `);
     // A native operation may have happened before the process stopped. Never resend it.
     this.db.run("UPDATE inbox SET state='uncertain' WHERE state='sending'");
@@ -159,6 +176,24 @@ export class Store {
       fingerprint,
       JSON.stringify(publicFields(message)),
       Number(mediaRetry),
+    );
+  }
+  scheduleMediaRetry(account: string, chat: string, id: string, attempts: number, next: number) {
+    this.run(
+      "UPDATE messages SET media_attempts=?,media_next_attempt=? WHERE account=? AND chat=? AND id=?",
+      attempts,
+      next,
+      account,
+      chat,
+      id,
+    );
+  }
+  abandonMediaRetry(account: string, chat: string, id: string) {
+    this.run(
+      "UPDATE messages SET media_retry=0 WHERE account=? AND chat=? AND id=?",
+      account,
+      chat,
+      id,
     );
   }
   accept(event: MatrixEvent) {
