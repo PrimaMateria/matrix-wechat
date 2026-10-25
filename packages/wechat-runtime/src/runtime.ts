@@ -82,6 +82,7 @@ export class Runtime {
   private device?: frida.Device;
   private session?: frida.Session;
   private script?: frida.Script;
+  private traceScript?: frida.Script;
   private pid = 0;
   private xvfb?: Bun.Subprocess;
   private vnc?: Bun.Subprocess;
@@ -512,6 +513,7 @@ export class Runtime {
     for (let i = 0; i < 50 && !initialized && !initialError; i++) await sleep(100);
     if (!initialized || initialError)
       throw new APIError("initialization_failed", "Native hooks did not initialize");
+    await this.startMediaTrace();
     await this.device.resume(this.pid);
     console.log("Native WeChat started inside container");
     void this.monitor();
@@ -714,9 +716,97 @@ export class Runtime {
     try {
       await this.session?.detach();
     } catch {}
+    try {
+      await this.traceScript?.unload();
+    } catch {}
     this.vnc?.kill();
     this.xvfb?.kill();
   }
+  // Development probe. Nothing in this runtime can ask WeChat to download an
+  // original attachment: there is no RPC for it, and received images resolve
+  // only as far as the thumbnail the client caches by itself. Finding the
+  // native call that does download one means reading a stripped binary with no
+  // exported symbols, so instead record the stack WeChat takes when it writes
+  // an original, triggered by opening the image in the UI over VNC. The frames
+  // are reported as module-relative addresses, which is the same form the ABI
+  // profiles use. Off unless WECHAT_TRACE_MEDIA=true.
+  private async startMediaTrace() {
+    if (process.env.WECHAT_TRACE_MEDIA !== "true" || !this.session) return;
+    const log = join(data, "media-trace.log");
+    const agent = `
+      function interesting(p) {
+        return typeof p === "string" && p.indexOf("/Img/") !== -1 &&
+          p.indexOf(".dat") !== -1 && p.indexOf("_t.dat") === -1;
+      }
+      function frames(context) {
+        var out = {};
+        ["ACCURATE", "FUZZY"].forEach(function (mode) {
+          try {
+            out[mode] = Thread.backtrace(context, Backtracer[mode]).map(function (a) {
+              var m = Process.findModuleByAddress(a);
+              return m ? m.name + "+0x" + a.sub(m.base).toString(16) : a.toString();
+            });
+          } catch (e) {
+            out[mode] = ["<" + e.message + ">"];
+          }
+        });
+        return out;
+      }
+      var hooked = [];
+      ["openat", "open", "creat", "rename", "renameat"].forEach(function (name) {
+        var addr = Module.findExportByName(null, name);
+        if (!addr) return;
+        try {
+          Interceptor.attach(addr, {
+            onEnter: function (args) {
+              var path = null, dest = null;
+              try {
+                path = (name === "openat" || name === "renameat")
+                  ? args[1].readUtf8String()
+                  : args[0].readUtf8String();
+              } catch (e) {
+                return;
+              }
+              if (name === "rename" || name === "renameat") {
+                try {
+                  dest = (name === "rename")
+                    ? args[1].readUtf8String()
+                    : args[3].readUtf8String();
+                } catch (e) {}
+              }
+              if (!interesting(path) && !interesting(dest)) return;
+              send({
+                event: "media_write",
+                fn: name,
+                path: path,
+                dest: dest,
+                thread: Process.getCurrentThreadId(),
+                frames: frames(this.context),
+              });
+            },
+          });
+          hooked.push(name);
+        } catch (e) {}
+      });
+      send({
+        event: "media_trace_ready",
+        hooked: hooked,
+        modules: Process.enumerateModules().slice(0, 5).map(function (m) {
+          return { name: m.name, base: m.base.toString(), size: m.size };
+        }),
+      });
+    `;
+    const script = await this.session.createScript(agent);
+    script.message.connect((message) => {
+      const line =
+        message.type === "send" ? JSON.stringify(message.payload) : JSON.stringify(message);
+      void appendFile(log, line + "\n", { mode: 0o600 }).catch(() => {});
+    });
+    await script.load();
+    this.traceScript = script;
+    console.log("Media trace active; frames are written to " + log);
+  }
+
   // Optional read/write VNC onto the Xvfb display. WeChat downloads an
   // original attachment only when the image is opened in the client, which is
   // otherwise impossible here: there is no RPC for it and nothing else can
