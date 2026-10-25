@@ -752,9 +752,20 @@ export class Runtime {
         });
         return out;
       }
+      // frida 17 replaced Module.findExportByName(null, name) with a static
+      // global lookup; accept either so the probe is not pinned to one version.
+      function resolveExport(name) {
+        try {
+          if (typeof Module.findGlobalExportByName === "function")
+            return Module.findGlobalExportByName(name);
+          if (typeof Module.findExportByName === "function")
+            return Module.findExportByName(null, name);
+        } catch (e) {}
+        return null;
+      }
       var hooked = [];
       ["openat", "open", "creat", "rename", "renameat"].forEach(function (name) {
-        var addr = Module.findExportByName(null, name);
+        var addr = resolveExport(name);
         if (!addr) return;
         try {
           Interceptor.attach(addr, {
