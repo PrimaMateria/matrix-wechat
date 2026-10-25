@@ -84,6 +84,7 @@ export class Runtime {
   private script?: frida.Script;
   private pid = 0;
   private xvfb?: Bun.Subprocess;
+  private vnc?: Bun.Subprocess;
   private display = "";
   private dirty = true;
   private baseline = false;
@@ -446,6 +447,7 @@ export class Runtime {
     const first = await reader.read();
     this.display = ":" + new TextDecoder().decode(first.value).trim();
     if (this.display === ":") throw new APIError("launch_failed", "Display did not start");
+    this.startVNC();
     this.device = await frida.getLocalDevice();
     this.device.output.connect((_pid, _fd, bytes) => {
       if (bytes.length) {
@@ -712,6 +714,44 @@ export class Runtime {
     try {
       await this.session?.detach();
     } catch {}
+    this.vnc?.kill();
     this.xvfb?.kill();
+  }
+  // Optional read/write VNC onto the Xvfb display. WeChat downloads an
+  // original attachment only when the image is opened in the client, which is
+  // otherwise impossible here: there is no RPC for it and nothing else can
+  // reach the Qt UI. Off unless WECHAT_VNC is set, and refuses to start
+  // without a password, because the port is reachable from the container
+  // network even when published only on loopback.
+  private startVNC() {
+    if (process.env.WECHAT_VNC !== "true") return;
+    const password = process.env.WECHAT_VNC_PASSWORD || "";
+    if (password.length < 8) {
+      console.error("VNC not started: WECHAT_VNC_PASSWORD must be at least 8 characters");
+      return;
+    }
+    const passwordFile = join(data, "vnc.pass");
+    const stored = Bun.spawnSync(["x11vnc", "-storepasswd", password, passwordFile]);
+    if (stored.exitCode !== 0) {
+      console.error("VNC not started: could not store the password");
+      return;
+    }
+    this.vnc = Bun.spawn(
+      [
+        "x11vnc",
+        "-display",
+        this.display,
+        "-rfbauth",
+        passwordFile,
+        "-forever",
+        "-shared",
+        "-noxdamage",
+        "-repeat",
+        "-rfbport",
+        "5900",
+      ],
+      { stdout: "ignore", stderr: "ignore" },
+    );
+    console.log("VNC listening on :5900 for display " + this.display);
   }
 }
