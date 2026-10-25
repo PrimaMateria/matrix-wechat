@@ -17,6 +17,11 @@ import { hash, type Inbox, type Mapping, type MatrixEvent, type Portal, Store } 
 
 const mediaKinds = new Set(["image", "sticker", "audio", "video", "file", "channels"]);
 const pendingTimeout = 120000;
+// WeChat downloads attachments lazily and some never arrive at all, so retries
+// back off per message and stop after roughly four hours rather than polling a
+// dead entry for the lifetime of the bridge.
+const mediaRetryLimit = 12;
+const mediaRetryBackoff = (attempts: number) => Math.min(5000 * 2 ** attempts, 3600000);
 export class WeChatBridge {
   private busy = false;
   private stopped = false;
@@ -604,12 +609,37 @@ export class WeChatBridge {
     }
   }
   private async retryMedia() {
+    // Only rows whose backoff has elapsed, oldest deadline first. Ordering by
+    // rowid instead would hand the whole window to the oldest failures, and
+    // media that never materialises would starve every later message.
     for (const row of this.store.all<Mapping>(
-      "SELECT * FROM messages WHERE account=? AND media_retry=1 AND redacted=0 ORDER BY rowid LIMIT 10",
+      `SELECT * FROM messages WHERE account=? AND media_retry=1 AND redacted=0
+         AND media_next_attempt<=? ORDER BY media_next_attempt,rowid LIMIT 10`,
       this.account,
+      Date.now(),
     )) {
       const portal = this.store.portal(this.account, row.chat);
-      if (portal) await this.receive(JSON.parse(row.payload), portal);
+      if (!portal) continue;
+      await this.receive(JSON.parse(row.payload), portal);
+      // receive() clears the flag once the media uploads; anything still set
+      // was missing again.
+      const current = this.store.get<{ media_retry: number }>(
+        "SELECT media_retry FROM messages WHERE account=? AND chat=? AND id=?",
+        this.account,
+        row.chat,
+        row.id,
+      );
+      if (!current?.media_retry) continue;
+      const attempts = row.media_attempts + 1;
+      if (attempts >= mediaRetryLimit) this.store.abandonMediaRetry(this.account, row.chat, row.id);
+      else
+        this.store.scheduleMediaRetry(
+          this.account,
+          row.chat,
+          row.id,
+          attempts,
+          Date.now() + mediaRetryBackoff(attempts),
+        );
     }
   }
   private async command(event: MatrixEvent, text: string) {
