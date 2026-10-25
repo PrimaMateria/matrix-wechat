@@ -614,6 +614,7 @@ export class Runtime {
         event_source: "native_database_write_hooks",
         direct_message_callback: "unverified",
       };
+    if (method === "trace_hook") return this.traceHook(params);
     if (method === "login") return this.login(params);
     if (method === "logout") return this.logout();
     return this.operation(async () => {
@@ -734,26 +735,37 @@ export class Runtime {
     if (process.env.WECHAT_TRACE_MEDIA !== "true" || !this.session) return;
     const log = join(data, "media-trace.log");
     const agent = `
+      const base = Process.mainModule.base;
+      function rel(p) {
+        try {
+          const m = Process.findModuleByAddress(p);
+          return m ? m.name + "+0x" + p.sub(m.base).toString(16) : String(p);
+        } catch (e) { return String(p); }
+      }
+      // libc++ std::string: LSB of the first byte selects short/long form.
+      function stdString(p) {
+        try {
+          const first = p.readU8();
+          if ((first & 1) === 0) return p.add(1).readUtf8String(first >> 1);
+          const size = p.add(8).readU64().toNumber();
+          if (size > 4096) return null;
+          return p.add(16).readPointer().readUtf8String(size);
+        } catch (e) { return null; }
+      }
+      function describe(p) {
+        if (p.isNull()) return null;
+        const s = stdString(p);
+        if (s !== null && s.length) return { kind: "std::string", value: s };
+        try {
+          const c = p.readUtf8String(192);
+          if (c && c.length > 2 && /^[\\x20-\\x7e]+$/.test(c)) return { kind: "cstr", value: c };
+        } catch (e) {}
+        return { kind: "ptr", value: String(p) };
+      }
       function interesting(p) {
         return typeof p === "string" && p.indexOf("/Img/") !== -1 &&
           p.indexOf(".dat") !== -1 && p.indexOf("_t.dat") === -1;
       }
-      function frames(context) {
-        var out = {};
-        ["ACCURATE", "FUZZY"].forEach(function (mode) {
-          try {
-            out[mode] = Thread.backtrace(context, Backtracer[mode]).map(function (a) {
-              var m = Process.findModuleByAddress(a);
-              return m ? m.name + "+0x" + a.sub(m.base).toString(16) : a.toString();
-            });
-          } catch (e) {
-            out[mode] = ["<" + e.message + ">"];
-          }
-        });
-        return out;
-      }
-      // frida 17 replaced Module.findExportByName(null, name) with a static
-      // global lookup; accept either so the probe is not pinned to one version.
       function resolveExport(name) {
         try {
           if (typeof Module.findGlobalExportByName === "function")
@@ -764,48 +776,54 @@ export class Runtime {
         return null;
       }
       var hooked = [];
-      ["openat", "open", "creat", "rename", "renameat"].forEach(function (name) {
+      ["openat", "open", "creat"].forEach(function (name) {
         var addr = resolveExport(name);
         if (!addr) return;
         try {
           Interceptor.attach(addr, {
             onEnter: function (args) {
-              var path = null, dest = null;
+              var path = null, flags = 0;
               try {
-                path = (name === "openat" || name === "renameat")
-                  ? args[1].readUtf8String()
-                  : args[0].readUtf8String();
-              } catch (e) {
-                return;
-              }
-              if (name === "rename" || name === "renameat") {
-                try {
-                  dest = (name === "rename")
-                    ? args[1].readUtf8String()
-                    : args[3].readUtf8String();
-                } catch (e) {}
-              }
-              if (!interesting(path) && !interesting(dest)) return;
-              send({
-                event: "media_write",
-                fn: name,
-                path: path,
-                dest: dest,
-                thread: Process.getCurrentThreadId(),
-                frames: frames(this.context),
-              });
+                if (name === "openat") { path = args[1].readUtf8String(); flags = args[2].toInt32(); }
+                else if (name === "creat") { path = args[0].readUtf8String(); flags = 0x41; }
+                else { path = args[0].readUtf8String(); flags = args[1].toInt32(); }
+              } catch (e) { return; }
+              if (!interesting(path)) return;
+              // O_WRONLY/O_RDWR or O_CREAT means the download is writing it.
+              var writing = (flags & 3) !== 0 || (flags & 0x40) !== 0;
+              send({ event: "open", fn: name, path: path, flags: flags, writing: writing,
+                     thread: Process.getCurrentThreadId(), ret: rel(this.returnAddress) });
             },
           });
           hooked.push(name);
         } catch (e) {}
       });
-      send({
-        event: "media_trace_ready",
-        hooked: hooked,
-        modules: Process.enumerateModules().slice(0, 5).map(function (m) {
-          return { name: m.name, base: m.base.toString(), size: m.size };
-        }),
-      });
+      // Hooks added at runtime, so walking the call graph costs no redeploy.
+      // Interceptor reports returnAddress exactly, unlike a stack scan.
+      var installed = {};
+      function install(req) {
+        var rva = req.rva, label = req.label || ("rva_" + rva);
+        if (installed[rva]) { send({ event: "hook_exists", rva: rva }); return; }
+        try {
+          Interceptor.attach(base.add(rva), {
+            onEnter: function (args) {
+              var out = [];
+              for (var i = 0; i < (req.argc || 4); i++) {
+                try { out.push(describe(args[i])); } catch (e) { out.push(null); }
+              }
+              send({ event: "hook", label: label, rva: rva, thread: Process.getCurrentThreadId(),
+                     ret: rel(this.returnAddress), args: out });
+            },
+          });
+          installed[rva] = true;
+          send({ event: "hooked", rva: rva, label: label });
+        } catch (e) {
+          send({ event: "hook_error", rva: rva, error: String(e && e.message) });
+        }
+      }
+      function listen() { recv("hook", function (m) { install(m); listen(); }); }
+      listen();
+      send({ event: "trace_ready", hooked: hooked, base: String(base) });
     `;
     const script = await this.session.createScript(agent);
     script.message.connect((message) => {
@@ -815,7 +833,23 @@ export class Runtime {
     });
     await script.load();
     this.traceScript = script;
-    console.log("Media trace active; frames are written to " + log);
+    console.log("Media trace active; events are written to " + log);
+  }
+  // Install an Interceptor at a module-relative address while running. Reached
+  // through the private socket only, which is how the download path is walked
+  // without rebuilding the image for every hypothesis.
+  async traceHook(params: Row) {
+    if (!this.traceScript) throw new APIError("not_ready", "Media trace is not running");
+    const rva = Number(params.rva);
+    if (!Number.isInteger(rva) || rva <= 0)
+      throw new APIError("invalid_params", "A module-relative address is required");
+    this.traceScript.post({
+      type: "hook",
+      rva,
+      label: typeof params.label === "string" ? params.label : undefined,
+      argc: Number(params.argc) || 4,
+    });
+    return { requested: rva };
   }
 
   // Optional read/write VNC onto the Xvfb display. WeChat downloads an
